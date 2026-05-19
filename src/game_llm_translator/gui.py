@@ -136,7 +136,7 @@ class TranslatorGUI(tk.Tk):
         self._action_button(tab, "Extract + Translate + Export Copy", self.pipeline).grid(row=1, column=2, sticky="w", padx=8, pady=4)
         advanced = ttk.LabelFrame(tab, text="Advanced translation options", padding=10)
         advanced.grid(row=2, column=0, columnspan=3, sticky="ew", pady=14)
-        self._row(advanced, 0, "Batch size", ttk.Spinbox(advanced, from_=1, to=200, textvariable=self.batch_size))
+        self._row(advanced, 0, "Batch size (0 = auto)", ttk.Spinbox(advanced, from_=0, to=200, textvariable=self.batch_size))
         self._row(advanced, 1, "Workers (parallel batches)", ttk.Spinbox(advanced, from_=1, to=8, textvariable=self.workers))
         ttk.Checkbutton(advanced, text="Ignore existing translations and start over", variable=self.restart).grid(row=2, column=1, sticky="w", pady=3)
         ttk.Checkbutton(advanced, text="Reuse translation memory", variable=self.reuse_memory).grid(row=3, column=1, sticky="w", pady=3)
@@ -490,6 +490,16 @@ class TranslatorGUI(tk.Tk):
                 by_id[identity] = result
         return list(by_id.values())
 
+    @staticmethod
+    def _estimate_batch_size(entries: list[TextEntry], target_tokens: int = 8000) -> int:
+        if not entries:
+            return 30
+        sample = entries[:min(20, len(entries))]
+        avg_chars = sum(len(e.source) + len(e.context_text) for e in sample) / len(sample)
+        avg_tokens = max(1, avg_chars / 3.5)
+        size = max(1, int(target_tokens / avg_tokens))
+        return min(size, 60)
+
     def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
         provider = make_provider(self.provider.get(), self.model.get(), self.api_key.get().strip() or None, self.api_base.get().strip() or None)
         existing = [] if self.restart.get() else (load_results(translations_csv) if translations_csv.exists() else [])
@@ -517,7 +527,10 @@ class TranslatorGUI(tk.Tk):
             results = self._dedupe_results(results, wanted_ids)
             save_results(results, translations_csv)
             self._log(f"Reused {reused} translations from memory")
-        size = int(self.batch_size.get())
+        raw_size = int(self.batch_size.get())
+        size = self._estimate_batch_size(to_translate) if raw_size == 0 else raw_size
+        if raw_size == 0:
+            self._log(f"Auto batch size: {size} entries/batch")
         num_workers = max(1, min(8, int(self.workers.get())))
         source = None if self.source_lang.get().lower() == "auto" else self.source_lang.get()
         target_lang = self.target_lang.get()
@@ -605,6 +618,12 @@ class TranslatorGUI(tk.Tk):
                     self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
         finally:
             executor.shutdown(wait=False)
+        # summary report
+        total = len(entries)
+        translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
+        fallback = total - translated
+        from_memory = reused
+        self._log(f"--- Translation report: {translated}/{total} translated, {fallback} fallback to source, {from_memory} from memory ---")
         return results
 
     def translate(self) -> None:
@@ -982,37 +1001,55 @@ class TranslationEditor(tk.Toplevel):
         super().__init__(parent)
         self.path = path
         self.title(f"Review/Edit translations - {path.name}")
-        self.geometry("1100x680")
+        self.geometry("1100x720")
         self.rows: list[dict[str, str]] = []
+        self.filtered_indices: list[int] = []
         self.current_index: int | None = None
+        self._filter_var = tk.StringVar(value="all")
+        self._search_var = tk.StringVar()
         self._build()
         self._load()
 
     def _build(self) -> None:
         main = ttk.Frame(self, padding=10)
         main.pack(fill=tk.BOTH, expand=True)
+
+        # filter bar
+        filter_bar = ttk.Frame(main)
+        filter_bar.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
+        ttk.Label(filter_bar, text="Filter:").pack(side=tk.LEFT, padx=(0, 4))
+        for label, value in [("All", "all"), ("Untranslated / Fallback", "fallback"), ("Translated", "translated")]:
+            ttk.Radiobutton(filter_bar, text=label, variable=self._filter_var, value=value, command=self._apply_filter).pack(side=tk.LEFT, padx=4)
+        ttk.Label(filter_bar, text="Search:").pack(side=tk.LEFT, padx=(16, 4))
+        search_entry = ttk.Entry(filter_bar, textvariable=self._search_var, width=24)
+        search_entry.pack(side=tk.LEFT, padx=4)
+        search_entry.bind("<Return>", lambda _: self._apply_filter())
+        ttk.Button(filter_bar, text="Go", command=self._apply_filter).pack(side=tk.LEFT, padx=2)
+        self.count_label = ttk.Label(filter_bar, text="")
+        self.count_label.pack(side=tk.RIGHT, padx=8)
+
         columns = ("index", "file", "key", "source", "target")
-        self.tree = ttk.Treeview(main, columns=columns, show="headings", height=18)
-        widths = {"index": 60, "file": 220, "key": 180, "source": 300, "target": 300}
+        self.tree = ttk.Treeview(main, columns=columns, show="headings", height=16, selectmode="browse")
+        widths = {"index": 60, "file": 200, "key": 160, "source": 280, "target": 280}
         for column in columns:
             self.tree.heading(column, text=column)
             self.tree.column(column, width=widths[column], anchor=tk.W)
-        self.tree.grid(row=0, column=0, columnspan=3, sticky="nsew")
+        self.tree.grid(row=1, column=0, columnspan=3, sticky="nsew")
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
         scroll = ttk.Scrollbar(main, orient=tk.VERTICAL, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
-        scroll.grid(row=0, column=3, sticky="ns")
+        scroll.grid(row=1, column=3, sticky="ns")
 
-        ttk.Label(main, text="Source").grid(row=1, column=0, sticky="w", pady=(10, 2))
-        ttk.Label(main, text="Target").grid(row=1, column=1, sticky="w", pady=(10, 2))
-        self.source_box = tk.Text(main, height=7, wrap=tk.WORD)
-        self.target_box = tk.Text(main, height=7, wrap=tk.WORD)
-        self.source_box.grid(row=2, column=0, sticky="nsew", padx=(0, 6))
-        self.target_box.grid(row=2, column=1, columnspan=2, sticky="nsew")
+        ttk.Label(main, text="Source").grid(row=2, column=0, sticky="w", pady=(10, 2))
+        ttk.Label(main, text="Target").grid(row=2, column=1, sticky="w", pady=(10, 2))
+        self.source_box = tk.Text(main, height=6, wrap=tk.WORD)
+        self.target_box = tk.Text(main, height=6, wrap=tk.WORD)
+        self.source_box.grid(row=3, column=0, sticky="nsew", padx=(0, 6))
+        self.target_box.grid(row=3, column=1, columnspan=2, sticky="nsew")
 
         buttons = ttk.Frame(main)
-        buttons.grid(row=3, column=0, columnspan=3, sticky="ew", pady=8)
+        buttons.grid(row=4, column=0, columnspan=3, sticky="ew", pady=8)
         ttk.Button(buttons, text="Save Current Row", command=self._save_current).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Save CSV", command=self._save_file).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Use Source as Translation", command=self._copy_source).pack(side=tk.LEFT, padx=4)
@@ -1021,16 +1058,44 @@ class TranslationEditor(tk.Toplevel):
         main.columnconfigure(0, weight=1)
         main.columnconfigure(1, weight=1)
         main.columnconfigure(2, weight=1)
-        main.rowconfigure(0, weight=3)
-        main.rowconfigure(2, weight=1)
+        main.rowconfigure(1, weight=3)
+        main.rowconfigure(3, weight=1)
 
     def _load(self) -> None:
         with self.path.open("r", newline="", encoding="utf-8-sig") as fp:
             self.rows = [dict(row) for row in csv.DictReader(fp)]
+        self._apply_filter()
+        if self.filtered_indices:
+            first_iid = str(self.filtered_indices[0])
+            self.tree.selection_set(first_iid)
+            self.tree.see(first_iid)
+
+    def _is_fallback(self, row: dict[str, str]) -> bool:
+        src = row.get("source", "").strip()
+        tgt = row.get("target", "").strip()
+        return not tgt or tgt == src
+
+    def _apply_filter(self) -> None:
+        self._save_current(update_tree=False)
+        mode = self._filter_var.get()
+        search = self._search_var.get().lower()
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.filtered_indices = []
         for index, row in enumerate(self.rows):
-            self.tree.insert("", tk.END, iid=str(index), values=(index, row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")))
-        if self.rows:
-            self.tree.selection_set("0")
+            if mode == "fallback" and not self._is_fallback(row):
+                continue
+            if mode == "translated" and self._is_fallback(row):
+                continue
+            if search and search not in (row.get("source", "") + row.get("target", "") + row.get("key", "")).lower():
+                continue
+            self.filtered_indices.append(index)
+            tag = "fallback" if self._is_fallback(row) else ""
+            self.tree.insert("", tk.END, iid=str(index), values=(index, row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")), tags=(tag,))
+        self.tree.tag_configure("fallback", foreground="#cc4400")
+        fallback_count = sum(1 for r in self.rows if self._is_fallback(r))
+        self.count_label.configure(text=f"Showing {len(self.filtered_indices)}/{len(self.rows)} | Fallback: {fallback_count}")
+        self.current_index = None
 
     def _on_select(self, _event=None) -> None:
         selection = self.tree.selection()
@@ -1050,8 +1115,9 @@ class TranslationEditor(tk.Toplevel):
             return
         row = self.rows[self.current_index]
         row["target"] = self.target_box.get("1.0", tk.END).rstrip("\n")
-        if update_tree:
-            self.tree.item(str(self.current_index), values=(self.current_index, row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")))
+        if update_tree and self.tree.exists(str(self.current_index)):
+            tag = "fallback" if self._is_fallback(row) else ""
+            self.tree.item(str(self.current_index), values=(self.current_index, row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")), tags=(tag,))
 
     def _copy_source(self) -> None:
         self.target_box.delete("1.0", tk.END)
