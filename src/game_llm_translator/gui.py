@@ -36,13 +36,9 @@ class TranslatorGUI(tk.Tk):
         self.action_buttons: list[ttk.Button] = []
         self.backup_paths: list[Path] = []
         self.translate_progress: dict[str, float | int] = {"done": 0, "total": 0, "started": 0.0}
-        try:
-            import sv_ttk
-            sv_ttk.set_theme("light")
-        except Exception:
-            pass
         self._build()
         self.after(150, self._drain_events)
+        self._apply_theme(load_app_config().get("theme", "light"))
 
     def _build(self) -> None:
         root = ttk.Frame(self, padding=12)
@@ -63,6 +59,7 @@ class TranslatorGUI(tk.Tk):
         self.batch_size = tk.IntVar(value=int(config.get("batch_size", 30)))
         self.workers = tk.IntVar(value=int(config.get("workers", 1)))
         self.glossary_path = tk.StringVar(value=str(config.get("glossary_path", "")))
+        self.theme_mode = tk.StringVar(value=str(config.get("theme", "light")))
         self.restart = tk.BooleanVar(value=False)
         self.remember_api_key = tk.BooleanVar(value=bool(config.get("remember_api_key", bool(config.get("api_key")))))
         self.reuse_memory = tk.BooleanVar(value=bool(config.get("reuse_memory", True)))
@@ -85,6 +82,22 @@ class TranslatorGUI(tk.Tk):
         header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         ttk.Label(header, text="Game LLM Translator", font=("Segoe UI", 16, "bold")).pack(side=tk.LEFT)
         ttk.Label(header, textvariable=self.status_text).pack(side=tk.RIGHT)
+        ttk.Button(header, text="Toggle theme", command=self._toggle_theme).pack(side=tk.RIGHT, padx=8)
+
+    def _apply_theme(self, mode: str) -> None:
+        try:
+            import sv_ttk
+            sv_ttk.set_theme(mode if mode in ("light", "dark") else "light")
+            self.theme_mode.set(mode if mode in ("light", "dark") else "light")
+        except Exception:
+            pass
+
+    def _toggle_theme(self) -> None:
+        new_mode = "dark" if self.theme_mode.get() == "light" else "light"
+        self._apply_theme(new_mode)
+        config = load_app_config()
+        config["theme"] = new_mode
+        save_app_config(config)
 
     def _build_tabs(self, parent: ttk.Frame) -> None:
         notebook = ttk.Notebook(parent)
@@ -298,6 +311,7 @@ class TranslatorGUI(tk.Tk):
             "batch_size": int(self.batch_size.get()),
             "workers": int(self.workers.get()),
             "glossary_path": self.glossary_path.get(),
+            "theme": self.theme_mode.get(),
             "remember_api_key": self.remember_api_key.get(),
             "reuse_memory": self.reuse_memory.get(),
             "save_memory": self.save_memory_enabled.get(),
