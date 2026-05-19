@@ -28,13 +28,19 @@ class TranslatorGUI(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Game LLM Translator")
-        self.geometry("1060x760")
+        self.geometry("1060x780")
         self.minsize(980, 680)
         self.events: queue.Queue[str] = queue.Queue()
         self.stop_requested = threading.Event()
         self.current_worker: threading.Thread | None = None
         self.action_buttons: list[ttk.Button] = []
         self.backup_paths: list[Path] = []
+        self.translate_progress: dict[str, float | int] = {"done": 0, "total": 0, "started": 0.0}
+        try:
+            import sv_ttk
+            sv_ttk.set_theme("light")
+        except Exception:
+            pass
         self._build()
         self.after(150, self._drain_events)
 
@@ -230,8 +236,10 @@ class TranslatorGUI(tk.Tk):
         bar = ttk.Frame(parent)
         bar.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(bar, textvariable=self.status_text).pack(side=tk.LEFT)
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=220)
+        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=260)
         self.progress.pack(side=tk.LEFT, padx=12)
+        self.progress_text = tk.StringVar(value="")
+        ttk.Label(bar, textvariable=self.progress_text, foreground="#555").pack(side=tk.LEFT, padx=4)
         self.stop_button = ttk.Button(bar, text="Stop", command=self.stop_current, state="disabled")
         self.stop_button.pack(side=tk.RIGHT)
 
@@ -322,9 +330,34 @@ class TranslatorGUI(tk.Tk):
         self.stop_button.configure(state="normal" if running else "disabled")
         self.status_text.set(f"Running: {name}" if running else "Idle")
         if running:
+            self.translate_progress = {"done": 0, "total": 0, "started": time.monotonic()}
+            self.progress.configure(mode="indeterminate")
             self.progress.start(10)
+            self.progress_text.set("")
         else:
             self.progress.stop()
+            self.progress.configure(mode="indeterminate", value=0)
+            self.progress_text.set("")
+
+    def _update_translate_progress(self, done: int, total: int) -> None:
+        self.translate_progress["done"] = done
+        self.translate_progress["total"] = total
+        if total <= 0:
+            return
+        if self.progress.cget("mode") != "determinate":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=total)
+        self.progress.configure(value=done)
+        elapsed = time.monotonic() - float(self.translate_progress["started"] or time.monotonic())
+        if done > 0 and elapsed > 0:
+            rate = done / elapsed
+            remaining = (total - done) / rate if rate > 0 else 0
+            mins = int(remaining // 60)
+            secs = int(remaining % 60)
+            pct = int(done * 100 / total)
+            self.progress_text.set(f"{pct}% | {done}/{total} | ~{mins}m{secs:02d}s left")
+        else:
+            self.progress_text.set(f"{done}/{total}")
 
     def _row(self, parent: ttk.Frame, row: int, label: str, widget: tk.Widget) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -628,6 +661,7 @@ class TranslatorGUI(tk.Tk):
                     with results_lock:
                         translated_count += len(batch)
                         self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)} ({len(failed_batches)} batch(es) deferred)")
+                        self._ui_call(lambda d=min(translated_count, len(entries)), t=len(entries): self._update_translate_progress(d, t))
                     continue
                 with results_lock:
                     translated_count += len(batch)
@@ -640,6 +674,7 @@ class TranslatorGUI(tk.Tk):
                         if saved_memory:
                             self._log(f"Saved {saved_memory} translations to memory")
                     self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
+                    self._ui_call(lambda d=min(translated_count, len(entries)), t=len(entries): self._update_translate_progress(d, t))
         finally:
             executor.shutdown(wait=False)
 
