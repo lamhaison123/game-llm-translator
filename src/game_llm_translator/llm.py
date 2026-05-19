@@ -68,7 +68,7 @@ def _restore_protected_tokens(text: str, mapping: dict[str, str]) -> str:
     return text
 
 
-SYSTEM_PROMPT = """You are an expert game localizer specializing in RPG, visual novel, and game UI text.
+SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, visual novel, and game UI text.
 
 ## Output format
 - Return a strict JSON array and nothing else. No markdown fences, no explanation, no extra text.
@@ -89,13 +89,39 @@ SYSTEM_PROMPT = """You are an expert game localizer specializing in RPG, visual 
 ## Context usage
 - Use context_text only to infer speaker identity, tone, pronouns, and terminology consistency.
 - Do NOT translate context_text unless it is also the item's source field.
+"""
 
-## Vietnamese-specific rules (when target is Vietnamese)
+_LANG_SPECIFIC_RULES: dict[str, str] = {
+    "vi": """## Vietnamese-specific rules
 - Use natural Vietnamese pronouns appropriate to the character's age/status/relationship.
 - Avoid overly formal or stiff phrasing that sounds machine-translated.
 - Keep RPG terms consistent throughout the batch (e.g. always use the same word for "skill", "item", "quest").
 - Honorifics and address forms should match the character's personality and social role.
-"""
+""",
+    "ja": """## Japanese-specific rules
+- Use appropriate keigo level matching the character's social role and relationship.
+- Preserve sentence-final particles and speech patterns that define character personality.
+- Keep katakana loanwords for modern/foreign concepts; use kanji/kana for traditional RPG terms.
+""",
+    "zh": """## Chinese-specific rules
+- Use Simplified Chinese unless the context clearly calls for Traditional.
+- Keep RPG terminology consistent (技能, 物品, 任务, etc.) throughout the batch.
+- Match formality level to the character's role and the scene's tone.
+""",
+    "ko": """## Korean-specific rules
+- Use appropriate speech level (존댓말/반말) matching the character's relationship and personality.
+- Keep RPG terms consistent throughout the batch.
+""",
+}
+
+
+def _build_system_prompt(target_lang: str | None) -> str:
+    lang_key = _lang_code(target_lang, "auto").lower()
+    addon = _LANG_SPECIFIC_RULES.get(lang_key, "")
+    return SYSTEM_PROMPT_BASE + addon
+
+
+SYSTEM_PROMPT = SYSTEM_PROMPT_BASE  # kept for backward compat with tests
 
 
 def _user_prompt(entries: Iterable[TextEntry], target_lang: str, source_lang: str | None) -> str:
@@ -343,12 +369,13 @@ class AnthropicProvider(LLMProvider):
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
+        system_prompt = _build_system_prompt(target_lang)
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
             thinking={"type": "adaptive"},
             output_config={"effort": "high"},
-            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": _user_prompt(entries, target_lang, source_lang)}],
         )
         text = _anthropic_message_text(message)
@@ -388,11 +415,12 @@ class OpenAIProvider(LLMProvider):
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
+        system_prompt = _build_system_prompt(target_lang)
         response = self.client.chat.completions.create(
             model=self.model,
             temperature=0.2,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _user_prompt(entries, target_lang, source_lang)},
             ],
         )
