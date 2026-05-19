@@ -525,6 +525,7 @@ class TranslatorGUI(tk.Tk):
         provider_name = self.provider.get()
         batches = [to_translate[s:s + size] for s in range(0, len(to_translate), size)]
         results_lock = threading.Lock()
+        translated_count = len(results)  # already done before this loop
 
         def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
             return provider.translate_batch(batch, target_lang, source)
@@ -539,8 +540,14 @@ class TranslatorGUI(tk.Tk):
                     for f in futures:
                         f.cancel()
                     raise RuntimeError("Stopped by user")
-                batch_results = future.result()
+                batch = futures[future]
+                try:
+                    batch_results = future.result()
+                except Exception as exc:
+                    self._log(f"Batch error (keeping source): {exc}")
+                    batch_results = [TranslationResult(e.file, e.key, e.source, e.source, e.context) for e in batch]
                 with results_lock:
+                    translated_count += len(batch)
                     results.extend(batch_results)
                     results = self._dedupe_results(results, wanted_ids)
                     save_results(results, translations_csv)
@@ -549,7 +556,7 @@ class TranslatorGUI(tk.Tk):
                         save_memory(global_memory_path(), batch_results, target_lang, source, provider_name)
                         if saved_memory:
                             self._log(f"Saved {saved_memory} translations to memory")
-                    self._log(f"Translated {min(len(results), len(entries))}/{len(entries)}")
+                    self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
         finally:
             executor.shutdown(wait=False)
         return results
