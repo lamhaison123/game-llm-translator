@@ -115,10 +115,13 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 }
 
 
-def _build_system_prompt(target_lang: str | None) -> str:
+def _build_system_prompt(target_lang: str | None, glossary_block: str = "") -> str:
     lang_key = _lang_code(target_lang, "auto").lower()
     addon = _LANG_SPECIFIC_RULES.get(lang_key, "")
-    return SYSTEM_PROMPT_BASE + addon
+    prompt = SYSTEM_PROMPT_BASE + addon
+    if glossary_block:
+        prompt = prompt + "\n" + glossary_block
+    return prompt
 
 
 SYSTEM_PROMPT = SYSTEM_PROMPT_BASE  # kept for backward compat with tests
@@ -179,6 +182,11 @@ def _results_from_json(entries: list[TextEntry], text: str) -> list[TranslationR
 
 
 class LLMProvider(ABC):
+    glossary_block: str = ""
+
+    def set_glossary(self, glossary_block: str) -> None:
+        self.glossary_block = glossary_block or ""
+
     @abstractmethod
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         raise NotImplementedError
@@ -369,7 +377,7 @@ class AnthropicProvider(LLMProvider):
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
-        system_prompt = _build_system_prompt(target_lang)
+        system_prompt = _build_system_prompt(target_lang, self.glossary_block)
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -415,7 +423,7 @@ class OpenAIProvider(LLMProvider):
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
-        system_prompt = _build_system_prompt(target_lang)
+        system_prompt = _build_system_prompt(target_lang, self.glossary_block)
         response = self.client.chat.completions.create(
             model=self.model,
             temperature=0.2,

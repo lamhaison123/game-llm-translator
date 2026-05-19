@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import pytest
 
+from game_llm_translator import csv_store as cs
 from game_llm_translator.csv_store import (
     load_entries,
     load_results,
@@ -109,3 +111,52 @@ def test_save_results_preserves_unicode(tmp_path):
     loaded = load_results(csv_file)
     assert loaded[0].source == "日本語"
     assert loaded[0].target == "Tiếng Nhật"
+
+
+# ---------------------------------------------------------------------------
+# Atomic writes
+# ---------------------------------------------------------------------------
+
+
+def test_save_results_atomic_on_crash(tmp_path, monkeypatch):
+    """If os.replace fails mid-save, the existing file must remain intact and no .tmp leftover."""
+    csv_file = tmp_path / "translations.csv"
+    first = [TranslationResult(Path("a.json"), "$.k", "Hello", "Xin chào")]
+    save_results(first, csv_file)
+
+    second = [TranslationResult(Path("b.json"), "$.k", "Bye", "Tạm biệt")]
+
+    def _broken_replace(*_args, **_kwargs):
+        raise OSError("simulated crash")
+
+    monkeypatch.setattr(cs.os, "replace", _broken_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        save_results(second, csv_file)
+
+    loaded = load_results(csv_file)
+    assert len(loaded) == 1
+    assert loaded[0].source == "Hello"
+    assert loaded[0].target == "Xin chào"
+
+    leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == []
+
+
+def test_save_results_concurrent_no_corruption(tmp_path):
+    """4 threads x 30 saves on the same file. Final state must be parseable."""
+    csv_file = tmp_path / "translations.csv"
+
+    def worker(tid: int) -> None:
+        payload = [TranslationResult(Path(f"t{tid}.json"), f"$.k{j}", f"src_t{tid}_{j}", f"tgt_t{tid}_{j}") for j in range(10)]
+        for _ in range(30):
+            save_results(payload, csv_file)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    loaded = load_results(csv_file)
+    assert len(loaded) == 10
+    assert all(r.target.startswith("tgt_t") for r in loaded)

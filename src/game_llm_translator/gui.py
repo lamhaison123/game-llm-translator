@@ -21,6 +21,7 @@ from .models import TextEntry, TranslationResult, text_identity
 from .rpg_maker import apply_rpg_maker, engine_to_gui_game_type, extract_rpg_maker_mv, extract_rpg_maker_mz, normalize_gui_game_type
 from .rpg_maker_cheat import apply_cheat, cheat_manifest_path, cheat_status, detect_cheat_engine, remove_cheat
 from .translation_memory import global_memory_path, load_memory, save_memory
+from .glossary import load_glossary, format_glossary_for_prompt
 
 
 class TranslatorGUI(tk.Tk):
@@ -55,6 +56,7 @@ class TranslatorGUI(tk.Tk):
         self.target_lang = tk.StringVar(value=str(config.get("target_lang", "Vietnamese")))
         self.batch_size = tk.IntVar(value=int(config.get("batch_size", 30)))
         self.workers = tk.IntVar(value=int(config.get("workers", 1)))
+        self.glossary_path = tk.StringVar(value=str(config.get("glossary_path", "")))
         self.restart = tk.BooleanVar(value=False)
         self.remember_api_key = tk.BooleanVar(value=bool(config.get("remember_api_key", bool(config.get("api_key")))))
         self.reuse_memory = tk.BooleanVar(value=bool(config.get("reuse_memory", True)))
@@ -138,10 +140,16 @@ class TranslatorGUI(tk.Tk):
         advanced.grid(row=2, column=0, columnspan=3, sticky="ew", pady=14)
         self._row(advanced, 0, "Batch size (0 = auto)", ttk.Spinbox(advanced, from_=0, to=200, textvariable=self.batch_size))
         self._row(advanced, 1, "Workers (parallel batches)", ttk.Spinbox(advanced, from_=1, to=8, textvariable=self.workers))
-        ttk.Checkbutton(advanced, text="Ignore existing translations and start over", variable=self.restart).grid(row=2, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(advanced, text="Reuse translation memory", variable=self.reuse_memory).grid(row=3, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(advanced, text="Save successful translations to memory", variable=self.save_memory_enabled).grid(row=4, column=1, sticky="w", pady=3)
-        ttk.Label(advanced, text="If old translations include asset filenames from an older parser run, use Backups > Clear Old Translation before translating again.", foreground="#555", wraplength=720).grid(row=4, column=1, columnspan=2, sticky="w", pady=8)
+        ttk.Label(advanced, text="Glossary CSV (optional)").grid(row=2, column=0, sticky="w", padx=4, pady=3)
+        glossary_frame = ttk.Frame(advanced)
+        glossary_frame.grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Entry(glossary_frame, textvariable=self.glossary_path).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(glossary_frame, text="Browse", command=self._choose_glossary).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Checkbutton(advanced, text="Ignore existing translations and start over", variable=self.restart).grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(advanced, text="Reuse translation memory", variable=self.reuse_memory).grid(row=4, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(advanced, text="Save successful translations to memory", variable=self.save_memory_enabled).grid(row=5, column=1, sticky="w", pady=3)
+        ttk.Label(advanced, text="Glossary CSV columns: term, translation, [note]. Terms here will be translated EXACTLY as listed in every batch.", foreground="#555", wraplength=720).grid(row=6, column=1, columnspan=2, sticky="w", pady=4)
+        ttk.Label(advanced, text="If old translations include asset filenames from an older parser run, use Backups > Clear Old Translation before translating again.", foreground="#555", wraplength=720).grid(row=7, column=1, columnspan=2, sticky="w", pady=4)
         advanced.columnconfigure(1, weight=1)
         tab.columnconfigure(2, weight=1)
 
@@ -281,6 +289,7 @@ class TranslatorGUI(tk.Tk):
             "target_lang": self.target_lang.get(),
             "batch_size": int(self.batch_size.get()),
             "workers": int(self.workers.get()),
+            "glossary_path": self.glossary_path.get(),
             "remember_api_key": self.remember_api_key.get(),
             "reuse_memory": self.reuse_memory.get(),
             "save_memory": self.save_memory_enabled.get(),
@@ -353,6 +362,11 @@ class TranslatorGUI(tk.Tk):
         value = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
         if value:
             var.set(value)
+
+    def _choose_glossary(self) -> None:
+        value = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
+        if value:
+            self.glossary_path.set(value)
 
     def _log(self, message: str) -> None:
         log_event(message)
@@ -502,6 +516,14 @@ class TranslatorGUI(tk.Tk):
 
     def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
         provider = make_provider(self.provider.get(), self.model.get(), self.api_key.get().strip() or None, self.api_base.get().strip() or None)
+        glossary_path_str = self.glossary_path.get().strip()
+        if glossary_path_str:
+            glossary_entries = load_glossary(Path(glossary_path_str))
+            if glossary_entries:
+                provider.set_glossary(format_glossary_for_prompt(glossary_entries))
+                self._log(f"Glossary: {len(glossary_entries)} entries loaded from {glossary_path_str}")
+            else:
+                self._log(f"Glossary: no entries loaded (file missing or empty): {glossary_path_str}")
         existing = [] if self.restart.get() else (load_results(translations_csv) if translations_csv.exists() else [])
         wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
         results = self._dedupe_results(existing, wanted_ids)

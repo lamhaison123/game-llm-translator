@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -127,3 +128,29 @@ def test_load_memory_merges_multiple_files(tmp_path):
     mem = load_memory([path1, path2], "vietnamese")
     assert "Hello" in mem
     assert "World" in mem
+
+
+def test_save_memory_concurrent_preserves_distinct_entries(tmp_path):
+    """2 threads each save 30 distinct entries to the same file. All must survive."""
+    path = tmp_path / "memory.csv"
+    expected_sources = set()
+
+    def worker(tid: int) -> None:
+        results = [
+            TranslationResult(Path("a.json"), f"$.k{j}", f"src_t{tid}_{j}", f"tgt_t{tid}_{j}")
+            for j in range(30)
+        ]
+        for r in results:
+            expected_sources.add(r.source)
+        save_memory(path, results, "Vietnamese", None, "google")
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    mem = load_memory([path], "Vietnamese")
+    for src in expected_sources:
+        assert src in mem, f"missing {src} after concurrent save"
+    assert len(mem) >= 60
