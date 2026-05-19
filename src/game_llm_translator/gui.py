@@ -187,15 +187,17 @@ class TranslatorGUI(tk.Tk):
         self._action_button(buttons, "Create Backup Now", self.create_backup_now).pack(side=tk.LEFT, padx=4)
         self._action_button(buttons, "Open Selected Backup", self.open_selected_backup).pack(side=tk.LEFT, padx=4)
         self._action_button(buttons, "Restore Selected Backup", self.restore_backup).pack(side=tk.LEFT, padx=4)
+        self._action_button(buttons, "Delete Selected Backup(s)", self.delete_selected_backups).pack(side=tk.LEFT, padx=4)
+        self._action_button(buttons, "Delete All Backups", self.delete_all_backups).pack(side=tk.LEFT, padx=4)
         self._action_button(buttons, "Clear Old Translation", self.clear_old_translation).pack(side=tk.RIGHT, padx=4)
         columns = ("kind", "path")
-        self.backups_tree = ttk.Treeview(tab, columns=columns, show="headings", height=12)
+        self.backups_tree = ttk.Treeview(tab, columns=columns, show="headings", height=12, selectmode="extended")
         self.backups_tree.heading("kind", text="Backup type")
         self.backups_tree.heading("path", text="Path")
         self.backups_tree.column("kind", width=150, anchor=tk.W)
         self.backups_tree.column("path", width=760, anchor=tk.W)
         self.backups_tree.grid(row=1, column=0, sticky="nsew")
-        ttk.Label(tab, text="Restore always creates data_before_restore_* before copying selected backup files.", foreground="#555").grid(row=2, column=0, sticky="w", pady=8)
+        ttk.Label(tab, text="Restore creates data_before_restore_* first. Delete only removes listed backup folders; game data is not changed.", foreground="#555").grid(row=2, column=0, sticky="w", pady=8)
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(1, weight=1)
 
@@ -417,6 +419,18 @@ class TranslatorGUI(tk.Tk):
             raise ValueError("Select a backup first")
         return self.backup_paths[int(selection[0])]
 
+    def _selected_backup_dirs(self) -> list[Path]:
+        selection = self.backups_tree.selection()
+        if not selection:
+            raise ValueError("Select one or more backups first")
+        return [self.backup_paths[int(item)] for item in selection]
+
+    def _backup_preview(self, paths: list[Path]) -> str:
+        preview = "\n".join(str(path) for path in paths[:12])
+        if len(paths) > 12:
+            preview += f"\n...and {len(paths) - 12} more"
+        return preview
+
     def _copy_json_files(self, source_dir: Path, target_dir: Path) -> int:
         files = list(source_dir.glob("*.json"))
         if not files:
@@ -571,7 +585,7 @@ class TranslatorGUI(tk.Tk):
         def job() -> None:
             out = self._export_results()
             self._check_stopped()
-            files = list(out.glob("*.json"))
+            files = list(out.rglob("*.json"))
             if not files:
                 raise ValueError(f"No translated JSON files found in: {out}")
             shutil.copytree(data_dir, backup_dir)
@@ -579,7 +593,9 @@ class TranslatorGUI(tk.Tk):
             self._check_stopped()
             for file in files:
                 self._check_stopped()
-                shutil.copy2(file, data_dir / file.name)
+                destination = data_dir / file.relative_to(out)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(file, destination)
             self._log(f"Applied {len(files)} translated files -> {data_dir}")
             self._ui_call(self.refresh_backups)
         self._run("apply to game", job)
@@ -722,6 +738,59 @@ class TranslatorGUI(tk.Tk):
             open_file_editor(self._selected_backup_dir())
         except Exception as exc:
             messagebox.showerror("Open Selected Backup", str(exc))
+
+    def _delete_backup_paths(self, game_dir: Path, paths: list[Path]) -> None:
+        def job() -> None:
+            allowed = {path.resolve() for path in self._backup_dirs(game_dir)}
+            deleted = 0
+            skipped = 0
+            for path in paths:
+                self._check_stopped()
+                if path.resolve() not in allowed or not path.exists():
+                    skipped += 1
+                    self._log(f"Skipped backup delete -> {path}")
+                    continue
+                shutil.rmtree(path)
+                deleted += 1
+                self._log(f"Deleted backup -> {path}")
+            self._log(f"Deleted {deleted} backup(s), skipped {skipped}.")
+            self._ui_call(self.refresh_backups)
+        self._run("delete backups", job)
+
+    def delete_selected_backups(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+            paths = self._selected_backup_dirs()
+        except Exception as exc:
+            messagebox.showerror("Delete Backups", str(exc))
+            return
+        ok = messagebox.askyesno(
+            "Delete Backups",
+            f"Permanently delete {len(paths)} selected backup folder(s)?\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?",
+        )
+        if not ok:
+            self._log("Delete selected backups cancelled.")
+            return
+        self._delete_backup_paths(game_dir, paths)
+
+    def delete_all_backups(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+            paths = self._backup_dirs(game_dir)
+        except Exception as exc:
+            messagebox.showerror("Delete All Backups", str(exc))
+            return
+        if not paths:
+            messagebox.showinfo("Delete All Backups", "No backup folders found.")
+            return
+        ok = messagebox.askyesno(
+            "Delete All Backups",
+            f"Permanently delete all {len(paths)} backup folder(s)?\n\nThis includes data_backup_* and data_before_restore_* folders.\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?",
+        )
+        if not ok:
+            self._log("Delete all backups cancelled.")
+            return
+        self._delete_backup_paths(game_dir, paths)
 
     def restore_backup(self) -> None:
         try:

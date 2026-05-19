@@ -168,7 +168,7 @@ def auto_translate_game(
         "texts_csv": str(texts_csv),
         "translations_csv": str(translations_csv),
         "out_dir": str(out_dir),
-        "translated_files": sorted(file.name for file in out_dir.glob("*.json")),
+        "translated_files": sorted(str(file.relative_to(out_dir).as_posix()) for file in out_dir.rglob("*.json")),
         "translated_entries": len(results),
         "resumed_entries": resumed_entries,
         "initial_pending_entries": initial_pending_entries,
@@ -184,8 +184,10 @@ def auto_translate_game(
             manifest["backup_dir"] = str(backup_dir)
             if progress:
                 progress(f"Backup created -> {backup_dir}")
-        for file in out_dir.glob("*.json"):
-            shutil.copy2(file, data_dir / file.name)
+        for file in out_dir.rglob("*.json"):
+            destination = data_dir / file.relative_to(out_dir)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file, destination)
         manifest["applied_dir"] = str(data_dir)
         if progress:
             progress(f"Applied translated files -> {data_dir}")

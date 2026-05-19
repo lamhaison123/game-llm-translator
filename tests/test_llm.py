@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,9 @@ from game_llm_translator.llm import (
     _lang_code,
     _mask_protected_tokens,
     _parse_translation_json,
+    _parse_google_translate_response,
+    _chat_completion_text,
+    _anthropic_message_text,
     _restore_protected_tokens,
     _results_from_json,
     _user_prompt,
@@ -156,6 +160,70 @@ def test_parse_translation_json_not_array_raises():
 def test_parse_translation_json_invalid_json_raises():
     with pytest.raises(Exception):
         _parse_translation_json("NOT JSON")
+
+
+
+
+# ---------------------------------------------------------------------------
+# _parse_google_translate_response
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# _chat_completion_text
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# _anthropic_message_text
+# ---------------------------------------------------------------------------
+
+def test_anthropic_message_text_basic():
+    message = SimpleNamespace(content=[SimpleNamespace(type="text", text="[]")])
+    assert _anthropic_message_text(message) == "[]"
+
+
+def test_anthropic_message_text_none_raises_clear_error():
+    with pytest.raises(ValueError, match="returned no message"):
+        _anthropic_message_text(None)
+
+
+def test_anthropic_message_text_missing_content_raises_clear_error():
+    message = SimpleNamespace(content=None)
+    with pytest.raises(ValueError, match="returned no content"):
+        _anthropic_message_text(message)
+
+
+def test_anthropic_message_text_empty_text_raises_clear_error():
+    message = SimpleNamespace(content=[SimpleNamespace(type="thinking", text="ignored")])
+    with pytest.raises(ValueError, match="empty text content"):
+        _anthropic_message_text(message)
+
+
+def test_chat_completion_text_basic():
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))])
+    assert _chat_completion_text(response) == "[]"
+
+
+def test_chat_completion_text_empty_choices_raises_clear_error():
+    response = SimpleNamespace(choices=[])
+    with pytest.raises(ValueError, match="returned no choices"):
+        _chat_completion_text(response)
+
+
+def test_chat_completion_text_missing_content_raises_clear_error():
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None))])
+    with pytest.raises(ValueError, match="returned no message content"):
+        _chat_completion_text(response)
+
+
+def test_parse_google_translate_response_basic():
+    data = [[["Xin", "Hello", None, None], [" chào", " world", None, None]], None, "en"]
+    assert _parse_google_translate_response(data) == "Xin chào"
+
+
+def test_parse_google_translate_response_empty_or_malformed_returns_empty():
+    assert _parse_google_translate_response([]) == ""
+    assert _parse_google_translate_response([None]) == ""
+    assert _parse_google_translate_response([[[]]]) == ""
 
 
 def test_parse_translation_json_empty_array():

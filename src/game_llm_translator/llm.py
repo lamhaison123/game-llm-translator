@@ -96,14 +96,31 @@ def _user_prompt(entries: Iterable[TextEntry], target_lang: str, source_lang: st
     )
 
 
+def _response_preview(text: str, limit: int = 300) -> str:
+    compact = text.replace("\r", "\\r").replace("\n", "\\n")
+    return compact[:limit]
+
+
 def _parse_translation_json(text: str) -> list[dict[str, Any]]:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").removeprefix("json").strip()
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM response was not valid JSON: {exc}. Preview: {_response_preview(text)}") from exc
     if not isinstance(data, list):
         raise ValueError("LLM response must be a JSON array")
-    return [item for item in data if isinstance(item, dict) and ("id" in item or "key" in item) and "target" in item]
+    items: list[dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict) or not ("id" in item or "key" in item) or "target" not in item:
+            continue
+        if item["target"] is None:
+            continue
+        item = dict(item)
+        item["target"] = str(item["target"])
+        items.append(item)
+    return items
 
 
 def _results_from_json(entries: list[TextEntry], text: str) -> list[TranslationResult]:
@@ -142,6 +159,12 @@ class MTLProvider(LLMProvider):
         raise NotImplementedError
 
 
+def _parse_google_translate_response(data: Any) -> str:
+    if not isinstance(data, list) or not data or not isinstance(data[0], list):
+        return ""
+    return "".join(part[0] for part in data[0] if isinstance(part, list) and part and isinstance(part[0], str))
+
+
 class GoogleMTLProvider(MTLProvider):
     def translate_text(self, text: str, target_lang: str, source_lang: str | None = None) -> str:
         params = {
@@ -154,7 +177,7 @@ class GoogleMTLProvider(MTLProvider):
         response = requests.get("https://translate.googleapis.com/translate_a/single", params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
-        return "".join(part[0] for part in data[0] if part and part[0])
+        return _parse_google_translate_response(data)
 
 
 class MyMemoryMTLProvider(MTLProvider):
@@ -261,7 +284,39 @@ class GoogleWebMTLProvider(MTLProvider):
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         data = response.json()
-        return "".join(part[0] for part in data[0] if part and part[0])
+        return _parse_google_translate_response(data)
+
+
+def _content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        if content.get("type") == "text" and content.get("text") is not None:
+            return str(content["text"])
+        if content.get("content") is not None:
+            return _content_text(content.get("content"))
+        return ""
+    if isinstance(content, list):
+        return "".join(_content_text(item) for item in content)
+    if getattr(content, "type", None) == "text" and getattr(content, "text", None) is not None:
+        return str(getattr(content, "text"))
+    if getattr(content, "content", None) is not None:
+        return _content_text(getattr(content, "content"))
+    return ""
+
+
+def _anthropic_message_text(message: Any) -> str:
+    if message is None:
+        raise ValueError("Anthropic-compatible provider returned no message")
+    content = getattr(message, "content", None)
+    if content is None:
+        raise ValueError("Anthropic-compatible provider returned no content")
+    text = _content_text(content)
+    if not text.strip():
+        raise ValueError("Anthropic-compatible provider returned empty text content")
+    return text
 
 
 class AnthropicProvider(LLMProvider):
@@ -278,8 +333,27 @@ class AnthropicProvider(LLMProvider):
             system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": _user_prompt(entries, target_lang, source_lang)}],
         )
-        text = "".join(block.text for block in message.content if getattr(block, "type", None) == "text")
+        text = _anthropic_message_text(message)
         return _results_from_json(entries, text)
+
+
+def _chat_completion_text(response: Any) -> str:
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise ValueError("OpenAI-compatible provider returned no choices")
+    choice = choices[0]
+    if choice is None:
+        raise ValueError("OpenAI-compatible provider returned empty choice")
+    message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+    if message is None:
+        raise ValueError("OpenAI-compatible provider returned no message")
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    if content is None:
+        raise ValueError("OpenAI-compatible provider returned no message content")
+    text = _content_text(content)
+    if not text.strip():
+        raise ValueError("OpenAI-compatible provider returned empty message content")
+    return text
 
 
 class OpenAIProvider(LLMProvider):
@@ -300,16 +374,17 @@ class OpenAIProvider(LLMProvider):
                 {"role": "user", "content": _user_prompt(entries, target_lang, source_lang)},
             ],
         )
-        text = response.choices[0].message.content or "[]"
+        text = _chat_completion_text(response)
         return _results_from_json(entries, text)
 
 
 def make_provider(provider: str, model: str, api_key: str | None = None, api_base: str | None = None) -> LLMProvider:
+    provider = provider.strip().lower()
     if provider == "anthropic":
         return AnthropicProvider(model, api_key)
     if provider == "openai":
         return OpenAIProvider(model, api_key, api_base)
-    if provider in {"openai-compatible", "compatible", "custom-openai", "openrouter", "lmstudio", "ollama"}:
+    if provider in {"openai-compatible", "openai compatible", "compatible", "custom-openai", "openrouter", "lmstudio", "ollama"}:
         return OpenAIProvider(model, api_key or os.getenv("OPENAI_COMPATIBLE_API_KEY"), api_base or os.getenv("OPENAI_COMPATIBLE_BASE_URL"))
     if provider in {"google", "google-mtl", "google-web"}:
         return GoogleMTLProvider()
