@@ -15,7 +15,7 @@ from .editor import open_file_editor
 from .llm import make_provider
 from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz
 from .unity import extract_unity
-from .models import TranslationResult
+from .models import TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, save_memory
 
 app = typer.Typer(help="Translate RPG Maker and Unity game text via LLM API.")
@@ -104,21 +104,22 @@ def extract(
     console.print(f"Extracted {len(entries)} entries -> {out}")
 
 
-def _dedupe_results(results: list[TranslationResult], wanted_keys: set[str]) -> list[TranslationResult]:
-    by_key: dict[str, TranslationResult] = {}
+def _dedupe_results(results: list[TranslationResult], wanted_ids: set[tuple[str, str]]) -> list[TranslationResult]:
+    by_id: dict[tuple[str, str], TranslationResult] = {}
     for result in results:
-        if result.key in wanted_keys:
-            by_key[result.key] = result
-    return list(by_key.values())
+        identity = text_identity(result.file, result.key)
+        if identity in wanted_ids:
+            by_id[identity] = result
+    return list(by_id.values())
 
 
 def _translate_with_resume(entries, out: Path, target_lang: str, source_lang: str | None, provider: str | None, model: str | None, batch_size: int | None = None, api_key: str | None = None, api_base: str | None = None, use_memory: bool = True, memory: Path | None = None):
     settings = load_settings(provider, model, batch_size or 30)
     llm = make_provider(settings.provider, settings.model, api_key, api_base)
     existing = load_results(out) if out.exists() else []
-    wanted_keys = {entry.key for entry in entries}
-    results = _dedupe_results(existing, wanted_keys)
-    completed = {result.key for result in results if result.target.strip() and result.target != result.source}
+    wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
+    results = _dedupe_results(existing, wanted_ids)
+    completed = {text_identity(result.file, result.key) for result in results if result.target.strip() and result.target != result.source}
     memory_map = {result.source: result.target for result in results if result.source.strip() and result.target.strip() and result.target != result.source}
     work_memory = out.parent / "translation_memory.csv"
     active_memory_paths = [global_memory_path(), work_memory]
@@ -129,7 +130,7 @@ def _translate_with_resume(entries, out: Path, target_lang: str, source_lang: st
         memory_map.update(persistent_memory)
         if persistent_memory:
             console.print(f"Loaded {len(persistent_memory)} memory entries")
-    pending = [entry for entry in entries if entry.key not in completed]
+    pending = [entry for entry in entries if text_identity(entry.file, entry.key) not in completed]
     to_translate = []
     reused = 0
     for entry in pending:
@@ -141,13 +142,13 @@ def _translate_with_resume(entries, out: Path, target_lang: str, source_lang: st
     if reused:
         console.print(f"Reused {reused} translations from memory")
         log_event(f"Reused {reused} translations from memory")
-        results = _dedupe_results(results, wanted_keys)
+        results = _dedupe_results(results, wanted_ids)
         save_results(results, out)
     for start in track(range(0, len(to_translate), settings.batch_size), description="Translating"):
         batch = to_translate[start : start + settings.batch_size]
         batch_results = llm.translate_batch(batch, target_lang, source_lang)
         results.extend(batch_results)
-        results = _dedupe_results(results, wanted_keys)
+        results = _dedupe_results(results, wanted_ids)
         for result in batch_results:
             if result.source.strip() and result.target.strip() and result.target != result.source:
                 memory_map[result.source] = result.target

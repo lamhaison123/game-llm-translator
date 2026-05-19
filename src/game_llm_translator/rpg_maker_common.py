@@ -291,14 +291,45 @@ def _set_json_value(data: Any, path: str, value: str) -> None:
     ref[parts[-1]] = value
 
 
+def _source_data_root(source_file: Path) -> Path | None:
+    for parent in [source_file.parent, *source_file.parents]:
+        if parent.name != "data":
+            continue
+        if parent.parent.name == "www" or (parent / "System.json").exists() or (parent / "Actors.json").exists():
+            return parent
+        for child in source_file.relative_to(parent).parts:
+            if child.startswith("Map") or child in RPG_MAKER_DATABASE_TEXT_FIELDS or child in {"System.json", "CommonEvents.json", "Troops.json", "PKD_PhoneMenu"}:
+                return parent
+    return None
+
+
+def _apply_output_path(source_file: Path, output_dir: Path) -> Path:
+    data_root = _source_data_root(source_file)
+    relative = source_file.relative_to(data_root) if data_root is not None else Path(source_file.name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe output path for source file: {source_file}")
+    target = output_dir / relative
+    if not target.resolve().is_relative_to(output_dir.resolve()):
+        raise ValueError(f"Output path escapes output folder: {target}")
+    return target
+
+
 def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
     grouped: dict[Path, list[TranslationResult]] = {}
     for result in results:
         grouped.setdefault(result.file, []).append(result)
     output_dir.mkdir(parents=True, exist_ok=True)
+    targets: dict[Path, Path] = {}
+    for file in grouped:
+        target = _apply_output_path(file, output_dir)
+        resolved = target.resolve()
+        if resolved in targets and targets[resolved] != file:
+            raise ValueError(f"Multiple source files map to one output path: {targets[resolved]} and {file} -> {target}")
+        targets[resolved] = file
     for file, file_results in grouped.items():
         data = json.loads(file.read_text(encoding="utf-8-sig"))
         for result in file_results:
             _set_json_value(data, result.key, result.target)
-        target = output_dir / file.name
+        target = _apply_output_path(file, output_dir)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

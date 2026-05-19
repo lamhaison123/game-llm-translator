@@ -18,3 +18,11 @@ class TranslationResult:
     source: str
     target: str
     context: str = ""
+
+
+def text_identity(file: Path | str, key: str) -> tuple[str, str]:
+    return (Path(file).as_posix(), key)
+
+
+def text_identity_id(file: Path | str, key: str) -> str:
+    return f"{Path(file).as_posix()}\x1f{key}"

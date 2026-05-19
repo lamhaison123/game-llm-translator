@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from pathlib import Path
+
 import pytest
 
 from game_llm_translator.llm import (
@@ -9,7 +11,10 @@ from game_llm_translator.llm import (
     _mask_protected_tokens,
     _parse_translation_json,
     _restore_protected_tokens,
+    _results_from_json,
+    _user_prompt,
 )
+from game_llm_translator.models import TextEntry
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +161,35 @@ def test_parse_translation_json_invalid_json_raises():
 def test_parse_translation_json_empty_array():
     result = _parse_translation_json("[]")
     assert result == []
+
+
+def test_user_prompt_includes_file_key_id():
+    entry = TextEntry(Path("data/Actors.json"), "$[1].name", "Harold")
+    payload = json.loads(_user_prompt([entry], "Vietnamese", None))
+
+    item = payload["items"][0]
+    assert item["id"] == "data/Actors.json\x1f$[1].name"
+    assert item["file"] == "data/Actors.json"
+    assert item["key"] == "$[1].name"
+
+
+def test_results_from_json_uses_id_for_duplicate_keys():
+    entries = [
+        TextEntry(Path("Actors.json"), "$[1].name", "Harold"),
+        TextEntry(Path("Items.json"), "$[1].name", "Potion"),
+    ]
+    response = json.dumps([
+        {"id": "Actors.json\x1f$[1].name", "key": "$[1].name", "target": "Ha-rôn"},
+        {"id": "Items.json\x1f$[1].name", "key": "$[1].name", "target": "Thuốc"},
+    ])
+
+    results = _results_from_json(entries, response)
+
+    assert [result.target for result in results] == ["Ha-rôn", "Thuốc"]
+
+
+def test_results_from_json_keeps_key_fallback_for_older_responses():
+    entry = TextEntry(Path("Actors.json"), "$[1].name", "Harold")
+    response = json.dumps([{"key": "$[1].name", "target": "Ha-rôn"}])
+
+    assert _results_from_json([entry], response)[0].target == "Ha-rôn"

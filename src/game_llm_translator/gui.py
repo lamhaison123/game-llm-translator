@@ -16,7 +16,7 @@ from .auto import analyze_game, auto_translate_game, write_analysis_report
 from .csv_store import load_entries, load_results, save_results
 from .editor import open_file_editor
 from .llm import make_provider
-from .models import TextEntry, TranslationResult
+from .models import TextEntry, TranslationResult, text_identity
 from .rpg_maker import apply_rpg_maker, engine_to_gui_game_type, extract_rpg_maker_mv, extract_rpg_maker_mz, normalize_gui_game_type
 from .rpg_maker_cheat import apply_cheat, cheat_manifest_path, cheat_status, detect_cheat_engine, remove_cheat
 from .translation_memory import global_memory_path, load_memory, save_memory
@@ -462,19 +462,20 @@ class TranslatorGUI(tk.Tk):
             self._ui_call(self.refresh_cheat_status)
         self._run("scan game", job)
 
-    def _dedupe_results(self, results: list[TranslationResult], wanted_keys: set[str]) -> list[TranslationResult]:
-        by_key: dict[str, TranslationResult] = {}
+    def _dedupe_results(self, results: list[TranslationResult], wanted_ids: set[tuple[str, str]]) -> list[TranslationResult]:
+        by_id: dict[tuple[str, str], TranslationResult] = {}
         for result in results:
-            if result.key in wanted_keys:
-                by_key[result.key] = result
-        return list(by_key.values())
+            identity = text_identity(result.file, result.key)
+            if identity in wanted_ids:
+                by_id[identity] = result
+        return list(by_id.values())
 
     def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
         provider = make_provider(self.provider.get(), self.model.get(), self.api_key.get().strip() or None, self.api_base.get().strip() or None)
         existing = [] if self.restart.get() else (load_results(translations_csv) if translations_csv.exists() else [])
-        wanted_keys = {entry.key for entry in entries}
-        results = self._dedupe_results(existing, wanted_keys)
-        completed = {result.key for result in results if result.target.strip() and result.target != result.source}
+        wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
+        results = self._dedupe_results(existing, wanted_ids)
+        completed = {text_identity(result.file, result.key) for result in results if result.target.strip() and result.target != result.source}
         memory = {result.source: result.target for result in results if result.source.strip() and result.target.strip() and result.target != result.source}
         work_memory = translations_csv.parent / "translation_memory.csv"
         persistent_memory: dict[str, str] = {}
@@ -483,7 +484,7 @@ class TranslatorGUI(tk.Tk):
             memory.update(persistent_memory)
         if persistent_memory:
             self._log(f"Loaded {len(persistent_memory)} memory entries")
-        pending = [entry for entry in entries if entry.key not in completed]
+        pending = [entry for entry in entries if text_identity(entry.file, entry.key) not in completed]
         to_translate: list[TextEntry] = []
         reused = 0
         for entry in pending:
@@ -493,7 +494,7 @@ class TranslatorGUI(tk.Tk):
             else:
                 to_translate.append(entry)
         if reused:
-            results = self._dedupe_results(results, wanted_keys)
+            results = self._dedupe_results(results, wanted_ids)
             save_results(results, translations_csv)
             self._log(f"Reused {reused} translations from memory")
         size = int(self.batch_size.get())
@@ -504,7 +505,7 @@ class TranslatorGUI(tk.Tk):
             batch_results = provider.translate_batch(batch, self.target_lang.get(), source)
             self._check_stopped()
             results.extend(batch_results)
-            results = self._dedupe_results(results, wanted_keys)
+            results = self._dedupe_results(results, wanted_ids)
             save_results(results, translations_csv)
             if self.save_memory_enabled.get():
                 saved_memory = save_memory(work_memory, batch_results, self.target_lang.get(), source, self.provider.get())

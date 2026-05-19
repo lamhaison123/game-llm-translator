@@ -13,7 +13,7 @@ import requests
 from anthropic import Anthropic
 from openai import OpenAI
 
-from .models import TextEntry, TranslationResult
+from .models import TextEntry, TranslationResult, text_identity_id
 
 LANG_CODES = {
     "auto": "auto",
@@ -76,13 +76,13 @@ Rules:
 - Use context_text only for continuity, speaker intent, tone, pronouns, and terminology.
 - Do not translate context_text unless it is also the item's source.
 - Return strict JSON array only.
-- Each output item must contain key and target.
+- Each output item must contain id, key, and target.
 """
 
 
 def _user_prompt(entries: Iterable[TextEntry], target_lang: str, source_lang: str | None) -> str:
     payload = [
-        {"key": e.key, "source": e.source, "context": e.context, "context_text": e.context_text}
+        {"id": text_identity_id(e.file, e.key), "file": e.file.as_posix(), "key": e.key, "source": e.source, "context": e.context, "context_text": e.context_text}
         for e in entries
     ]
     return json.dumps(
@@ -103,13 +103,18 @@ def _parse_translation_json(text: str) -> list[dict[str, Any]]:
     data = json.loads(text)
     if not isinstance(data, list):
         raise ValueError("LLM response must be a JSON array")
-    return [item for item in data if isinstance(item, dict) and "key" in item and "target" in item]
+    return [item for item in data if isinstance(item, dict) and ("id" in item or "key" in item) and "target" in item]
 
 
 def _results_from_json(entries: list[TextEntry], text: str) -> list[TranslationResult]:
     data = _parse_translation_json(text)
-    by_key = {str(item["key"]): str(item["target"]) for item in data}
-    return [TranslationResult(e.file, e.key, e.source, by_key.get(e.key, e.source), e.context) for e in entries]
+    by_id = {str(item["id"]): str(item["target"]) for item in data if "id" in item}
+    by_key = {str(item["key"]): str(item["target"]) for item in data if "key" in item}
+    results: list[TranslationResult] = []
+    for entry in entries:
+        target = by_id.get(text_identity_id(entry.file, entry.key), by_key.get(entry.key, entry.source))
+        results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context))
+    return results
 
 
 class LLMProvider(ABC):

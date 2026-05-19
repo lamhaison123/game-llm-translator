@@ -10,7 +10,7 @@ import time
 from .app_logging import log_event
 from .csv_store import load_results, save_entries, save_results
 from .llm import make_provider
-from .models import TextEntry, TranslationResult
+from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, save_memory
 from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, is_supported_json_engine
 
@@ -44,21 +44,22 @@ def write_analysis_report(report: dict[str, object], file: Path) -> None:
     file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _dedupe_results(results: list[TranslationResult], wanted_keys: set[str] | None = None) -> list[TranslationResult]:
-    by_key: dict[str, TranslationResult] = {}
+def _dedupe_results(results: list[TranslationResult], wanted_ids: set[tuple[str, str]] | None = None) -> list[TranslationResult]:
+    by_id: dict[tuple[str, str], TranslationResult] = {}
     for result in results:
-        if wanted_keys is not None and result.key not in wanted_keys:
+        identity = text_identity(result.file, result.key)
+        if wanted_ids is not None and identity not in wanted_ids:
             continue
-        by_key[result.key] = result
-    return list(by_key.values())
+        by_id[identity] = result
+    return list(by_id.values())
 
 
 def _load_existing_results(translations_csv: Path, entries: list) -> list[TranslationResult]:
     if not translations_csv.exists():
         return []
-    wanted_keys = {entry.key for entry in entries}
+    wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
     existing = load_results(translations_csv)
-    return _dedupe_results(existing, wanted_keys)
+    return _dedupe_results(existing, wanted_ids)
 
 
 def auto_translate_game(
@@ -103,7 +104,7 @@ def auto_translate_game(
     existing_results: list[TranslationResult] = [] if restart else _load_existing_results(translations_csv, entries)
     resumed_entries = len(existing_results)
     results: list[TranslationResult] = list(existing_results)
-    completed = {result.key for result in results if result.target.strip() and result.target != result.source}
+    completed = {text_identity(result.file, result.key) for result in results if result.target.strip() and result.target != result.source}
     memory = {
         result.source: result.target
         for result in results
@@ -117,14 +118,14 @@ def auto_translate_game(
         log_event(f"Loaded {len(persistent_memory)} memory entries")
         if progress:
             progress(f"Loaded {len(persistent_memory)} memory entries")
-    pending_entries = [entry for entry in entries if entry.key not in completed]
+    pending_entries = [entry for entry in entries if text_identity(entry.file, entry.key) not in completed]
     initial_pending_entries = len(pending_entries)
     reused = 0
     to_translate: list[TextEntry] = []
     for entry in pending_entries:
         if entry.source in memory:
             results.append(TranslationResult(entry.file, entry.key, entry.source, memory[entry.source], entry.context))
-            completed.add(entry.key)
+            completed.add(text_identity(entry.file, entry.key))
             reused += 1
         else:
             to_translate.append(entry)
@@ -135,13 +136,13 @@ def auto_translate_game(
     if reused:
         log_event(f"Reused {reused} translations from memory")
     if results:
-        results = _dedupe_results(results, {entry.key for entry in entries})
+        results = _dedupe_results(results, {text_identity(entry.file, entry.key) for entry in entries})
         save_results(results, translations_csv)
     for start in range(0, len(to_translate), batch_size):
         batch = to_translate[start:start + batch_size]
         batch_results = translator.translate_batch(batch, target_lang, source_lang)
         results.extend(batch_results)
-        results = _dedupe_results(results, {entry.key for entry in entries})
+        results = _dedupe_results(results, {text_identity(entry.file, entry.key) for entry in entries})
         for result in batch_results:
             if result.source.strip() and result.target.strip() and result.target != result.source:
                 memory[result.source] = result.target

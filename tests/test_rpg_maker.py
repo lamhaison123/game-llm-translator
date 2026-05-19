@@ -401,3 +401,18 @@ def test_apply_rpg_maker_multiple_files(tmp_path):
     skills_out = json.loads((out_dir / "Skills.json").read_text(encoding="utf-8"))
     assert actors_out[1]["name"] == "Ha-rôn"
     assert skills_out[1]["name"] == "Tấn công"
+
+
+def test_apply_rpg_maker_preserves_nested_data_paths(tmp_path):
+    src = tmp_path / "data" / "PKD_PhoneMenu" / "SaveLoadApp" / "NUI_SaveAppMainScreen.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(json.dumps({"childrens": [{"bindings": {"text": "Save?"}}]}), encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    apply_rpg_maker([TranslationResult(file=src, key="$.childrens[0].bindings.text", source="Save?", target="Lưu?")], out_dir)
+
+    out_file = out_dir / "PKD_PhoneMenu" / "SaveLoadApp" / "NUI_SaveAppMainScreen.json"
+    assert out_file.exists()
+    assert not (out_dir / "NUI_SaveAppMainScreen.json").exists()
+    data = json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["childrens"][0]["bindings"]["text"] == "Lưu?"
