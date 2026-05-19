@@ -1,0 +1,403 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from game_llm_translator.models import TextEntry, TranslationResult
+from game_llm_translator.rpg_maker import (
+    _parse_path,
+    _set_json_value,
+    _walk_json,
+    apply_rpg_maker,
+    detect_rpg_maker,
+    extract_rpg_maker,
+)
+
+
+# ---------------------------------------------------------------------------
+# _parse_path
+# ---------------------------------------------------------------------------
+
+def test_parse_path_simple_key():
+    assert _parse_path("$.name") == ["name"]
+
+
+def test_parse_path_nested_keys():
+    assert _parse_path("$.actors.name") == ["actors", "name"]
+
+
+def test_parse_path_array_index():
+    assert _parse_path("$[0].name") == [0, "name"]
+
+
+def test_parse_path_nested_array():
+    assert _parse_path("$[1].list[2].parameters[0]") == [1, "list", 2, "parameters", 0]
+
+
+def test_parse_path_only_root():
+    assert _parse_path("$") == []
+
+
+# ---------------------------------------------------------------------------
+# _set_json_value
+# ---------------------------------------------------------------------------
+
+def test_set_json_value_simple():
+    data = {"name": "old"}
+    _set_json_value(data, "$.name", "new")
+    assert data["name"] == "new"
+
+
+def test_set_json_value_list():
+    data = [{"name": "old"}]
+    _set_json_value(data, "$[0].name", "new")
+    assert data[0]["name"] == "new"
+
+
+def test_set_json_value_deep():
+    data = [None, {"list": [None, None, {"parameters": ["orig"]}]}]
+    _set_json_value(data, "$[1].list[2].parameters[0]", "translated")
+    assert data[1]["list"][2]["parameters"][0] == "translated"
+
+
+# ---------------------------------------------------------------------------
+# detect_rpg_maker
+# ---------------------------------------------------------------------------
+
+def test_detect_rpg_maker_mv_mz_via_data(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "Actors.json").write_text("[]")
+    assert detect_rpg_maker(tmp_path) == "mv-mz"
+
+
+def test_detect_rpg_maker_mv(tmp_path):
+    data_dir = tmp_path / "www" / "data"
+    data_dir.mkdir(parents=True)
+    js_dir = tmp_path / "www" / "js"
+    js_dir.mkdir()
+    (js_dir / "rpg_core.js").write_text("")
+    assert detect_rpg_maker(tmp_path) == "mv"
+
+
+def test_detect_rpg_maker_mz(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    js_dir = tmp_path / "js"
+    js_dir.mkdir()
+    (js_dir / "rmmz_core.js").write_text("")
+    assert detect_rpg_maker(tmp_path) == "mz"
+
+
+def test_detect_rpg_maker_www_data(tmp_path):
+    www = tmp_path / "www" / "data"
+    www.mkdir(parents=True)
+    js = tmp_path / "www" / "js"
+    js.mkdir()
+    (js / "rpg_core.js").write_text("")
+    assert detect_rpg_maker(tmp_path) == "mv"
+
+
+def test_detect_rpg_maker_vx_ace(tmp_path):
+    ini = tmp_path / "Game.ini"
+    ini.write_text("[Game]\nRTP=RGSS3\n", encoding="utf-8")
+    assert detect_rpg_maker(tmp_path) == "vx-ace"
+
+
+def test_detect_rpg_maker_unknown(tmp_path):
+    assert detect_rpg_maker(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# extract_rpg_maker
+# ---------------------------------------------------------------------------
+
+ACTORS_JSON = json.dumps([
+    None,
+    {"id": 1, "name": "Harold", "nickname": "The Sword", "profile": "A brave warrior.", "description": "", "note": ""},
+])
+
+SKILLS_JSON = json.dumps([
+    None,
+    {
+        "id": 1,
+        "name": "Attack",
+        "description": "A normal attack.",
+        "message1": "\\V[1] attacks!",
+        "message2": "",
+        "note": "",
+    },
+])
+
+SYSTEM_JSON = json.dumps({
+    "armorTypes": ["", "Cloth", "Mail"],
+    "elements": ["", "Fire", "Water"],
+    "skillTypes": ["", "Magic"],
+    "weaponTypes": ["", "Sword"],
+    "equipTypes": ["", "Weapon"],
+    "switches": ["", "switch1"],
+    "variables": ["", "var1"],
+    "gameTitle": "Test Game",
+    "currencyUnit": "Gold",
+    "title1Name": "TitleAsset",
+    "battleBgm": {"name": "Battle1", "volume": 90, "pitch": 100, "pan": 0},
+    "sounds": [{"name": "Cursor2", "volume": 90, "pitch": 100, "pan": 0}],
+    "terms": {
+        "basic": ["Level", "HP"],
+        "commands": ["Fight", "Escape"],
+        "params": ["Max HP", "Attack"],
+        "messages": {"saveMessage": "Save to which file?"},
+    },
+    "locale": "en_US",
+})
+
+
+def _make_rpg_game(tmp_path: Path, files: dict[str, str]) -> Path:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    for name, content in files.items():
+        (data_dir / name).write_text(content, encoding="utf-8")
+    return tmp_path
+
+
+def test_extract_rpg_maker_actors(tmp_path):
+    _make_rpg_game(tmp_path, {"Actors.json": ACTORS_JSON})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Harold" in sources
+    assert "The Sword" in sources
+    assert "A brave warrior." in sources
+
+
+def test_extract_rpg_maker_skills(tmp_path):
+    _make_rpg_game(tmp_path, {"Skills.json": SKILLS_JSON})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Attack" in sources
+    assert "A normal attack." in sources
+    assert "\\V[1] attacks!" in sources
+
+
+def test_extract_rpg_maker_system_arrays(tmp_path):
+    _make_rpg_game(tmp_path, {"System.json": SYSTEM_JSON})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    # armorTypes, elements, skillTypes, weaponTypes, equipTypes should be extracted
+    assert "Cloth" in sources
+    assert "Fire" in sources
+    assert "Magic" in sources
+    assert "Sword" in sources
+    assert "Test Game" in sources
+    assert "Gold" in sources
+    assert "Level" in sources
+    assert "Fight" in sources
+    assert "Max HP" in sources
+    assert "Save to which file?" in sources
+    # switches, variables, and assets must NOT be extracted
+    assert "switch1" not in sources
+    assert "var1" not in sources
+    assert "TitleAsset" not in sources
+    assert "Battle1" not in sources
+    assert "Cursor2" not in sources
+
+
+def test_extract_rpg_maker_skips_asset_names(tmp_path):
+    map_data = json.dumps({
+        "displayName": "Town Entrance",
+        "battleback1Name": "Road3",
+        "battleback2Name": "Town1",
+        "parallaxName": "Clouds",
+        "bgm": {"name": "Town 1", "volume": 90, "pitch": 100, "pan": 0},
+        "events": [
+            None,
+            {
+                "id": 1,
+                "name": "EV001",
+                "pages": [
+                    {
+                        "image": {"characterName": "Actor1", "characterIndex": 0},
+                        "list": [
+                            {"code": 231, "parameters": [1, "PictureAsset"]},
+                            {"code": 241, "parameters": [{"name": "Battle1", "volume": 90, "pitch": 100, "pan": 0}]},
+                            {"code": 250, "parameters": [{"name": "Open1", "volume": 90, "pitch": 100, "pan": 0}]},
+                            {"code": 401, "parameters": ["Welcome!"]},
+                        ],
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Town Entrance" in sources
+    assert "Welcome!" in sources
+    assert "Town 1" not in sources
+    assert "Actor1" not in sources
+    assert "Road3" not in sources
+    assert "Town1" not in sources
+    assert "Clouds" not in sources
+    assert "PictureAsset" not in sources
+    assert "Battle1" not in sources
+    assert "Open1" not in sources
+
+
+def test_extract_rpg_maker_event_choices(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 102, "parameters": [["Yes", "No"], 0, 0, 2, 0]},
+                            {"code": 402, "parameters": [0, "Yes"]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    assert [entry.source for entry in entries] == ["Yes", "No"]
+    assert [entry.key for entry in entries] == [
+        "$.events[1].pages[0].list[0].parameters[0][0]",
+        "$.events[1].pages[0].list[0].parameters[0][1]",
+    ]
+
+
+def test_extract_rpg_maker_skips_plugin_and_script_commands(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 355, "parameters": ["$gameMessage.add('Script text')"]},
+                            {"code": 356, "parameters": ["Plugin Command Text"]},
+                            {"code": 357, "parameters": ["PluginName", "command", "Display Text"]},
+                            {"code": 655, "parameters": ["continued script text"]},
+                            {"code": 401, "parameters": ["Visible dialogue"]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [entry.source for entry in entries]
+    assert sources == ["Visible dialogue"]
+
+
+def test_extract_rpg_maker_www_data(tmp_path):
+    data_dir = tmp_path / "www" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "Actors.json").write_text(ACTORS_JSON, encoding="utf-8")
+    entries = extract_rpg_maker(tmp_path)
+    assert any(entry.source == "Harold" for entry in entries)
+
+
+def test_extract_rpg_maker_skips_editor_name_files(tmp_path):
+    map_infos = json.dumps([None, {"id": 1, "name": "MAP001"}])
+    tilesets = json.dumps([None, {"id": 1, "name": "Outside", "tilesetNames": ["World_A1"]}])
+    animations = json.dumps([None, {"id": 1, "name": "Hit", "animation1Name": "Hit1", "animation2Name": "Slash"}])
+    _make_rpg_game(tmp_path, {"MapInfos.json": map_infos, "Tilesets.json": tilesets, "Animations.json": animations})
+    entries = extract_rpg_maker(tmp_path)
+    assert entries == []
+
+
+def test_extract_rpg_maker_event_text(tmp_path):
+    map_data = json.dumps([
+        None,
+        {
+            "id": 1,
+            "events": [
+                None,
+                {
+                    "id": 1,
+                    "pages": [
+                        {
+                            "list": [
+                                {"code": 401, "parameters": ["Hello, world!"]},
+                                {"code": 401, "parameters": ["Another line."]},
+                            ]
+                        }
+                    ],
+                },
+            ],
+        },
+    ])
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Hello, world!" in sources
+    assert "Another line." in sources
+
+
+def test_extract_rpg_maker_invalid_json_skipped(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "Bad.json").write_text("NOT JSON", encoding="utf-8")
+    (data_dir / "Actors.json").write_text(ACTORS_JSON, encoding="utf-8")
+    entries = extract_rpg_maker(tmp_path)
+    assert any(e.source == "Harold" for e in entries)
+
+
+# ---------------------------------------------------------------------------
+# apply_rpg_maker
+# ---------------------------------------------------------------------------
+
+def test_apply_rpg_maker_basic(tmp_path):
+    src = tmp_path / "data" / "Actors.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(ACTORS_JSON, encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    results = [
+        TranslationResult(file=src, key="$[1].name", source="Harold", target="Ha-rôn"),
+        TranslationResult(file=src, key="$[1].nickname", source="The Sword", target="Kiếm Sĩ"),
+    ]
+    apply_rpg_maker(results, out_dir)
+
+    out_file = out_dir / "Actors.json"
+    assert out_file.exists()
+    data = json.loads(out_file.read_text(encoding="utf-8"))
+    assert data[1]["name"] == "Ha-rôn"
+    assert data[1]["nickname"] == "Kiếm Sĩ"
+
+
+def test_apply_rpg_maker_creates_output_dir(tmp_path):
+    src = tmp_path / "data" / "Actors.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(ACTORS_JSON, encoding="utf-8")
+    out_dir = tmp_path / "deep" / "nested" / "out"
+
+    results = [TranslationResult(file=src, key="$[1].name", source="Harold", target="Ha-rôn")]
+    apply_rpg_maker(results, out_dir)
+    assert (out_dir / "Actors.json").exists()
+
+
+def test_apply_rpg_maker_multiple_files(tmp_path):
+    actors_src = tmp_path / "data" / "Actors.json"
+    skills_src = tmp_path / "data" / "Skills.json"
+    actors_src.parent.mkdir(parents=True)
+    actors_src.write_text(ACTORS_JSON, encoding="utf-8")
+    skills_src.write_text(SKILLS_JSON, encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    results = [
+        TranslationResult(file=actors_src, key="$[1].name", source="Harold", target="Ha-rôn"),
+        TranslationResult(file=skills_src, key="$[1].name", source="Attack", target="Tấn công"),
+    ]
+    apply_rpg_maker(results, out_dir)
+    actors_out = json.loads((out_dir / "Actors.json").read_text(encoding="utf-8"))
+    skills_out = json.loads((out_dir / "Skills.json").read_text(encoding="utf-8"))
+    assert actors_out[1]["name"] == "Ha-rôn"
+    assert skills_out[1]["name"] == "Tấn công"
