@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import concurrent.futures
 import csv
 import queue
 import shutil
@@ -513,10 +514,20 @@ class TranslatorGUI(tk.Tk):
             self._log(f"Reused {reused} translations from memory")
         size = int(self.batch_size.get())
         source = None if self.source_lang.get().lower() == "auto" else self.source_lang.get()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         for start in range(0, len(to_translate), size):
             self._check_stopped()
             batch = to_translate[start:start + size]
-            batch_results = provider.translate_batch(batch, self.target_lang.get(), source)
+            future = executor.submit(provider.translate_batch, batch, self.target_lang.get(), source)
+            while True:
+                try:
+                    batch_results = future.result(timeout=0.5)
+                    break
+                except concurrent.futures.TimeoutError:
+                    if self.stop_requested.is_set():
+                        future.cancel()
+                        executor.shutdown(wait=False)
+                        raise RuntimeError("Stopped by user")
             self._check_stopped()
             results.extend(batch_results)
             results = self._dedupe_results(results, wanted_ids)
