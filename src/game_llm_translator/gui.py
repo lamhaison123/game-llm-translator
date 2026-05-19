@@ -54,6 +54,7 @@ class TranslatorGUI(tk.Tk):
         self.source_lang = tk.StringVar(value=str(config.get("source_lang", "auto")))
         self.target_lang = tk.StringVar(value=str(config.get("target_lang", "Vietnamese")))
         self.batch_size = tk.IntVar(value=int(config.get("batch_size", 30)))
+        self.workers = tk.IntVar(value=int(config.get("workers", 1)))
         self.restart = tk.BooleanVar(value=False)
         self.remember_api_key = tk.BooleanVar(value=bool(config.get("remember_api_key", bool(config.get("api_key")))))
         self.reuse_memory = tk.BooleanVar(value=bool(config.get("reuse_memory", True)))
@@ -136,9 +137,10 @@ class TranslatorGUI(tk.Tk):
         advanced = ttk.LabelFrame(tab, text="Advanced translation options", padding=10)
         advanced.grid(row=2, column=0, columnspan=3, sticky="ew", pady=14)
         self._row(advanced, 0, "Batch size", ttk.Spinbox(advanced, from_=1, to=200, textvariable=self.batch_size))
-        ttk.Checkbutton(advanced, text="Ignore existing translations and start over", variable=self.restart).grid(row=1, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(advanced, text="Reuse translation memory", variable=self.reuse_memory).grid(row=2, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(advanced, text="Save successful translations to memory", variable=self.save_memory_enabled).grid(row=3, column=1, sticky="w", pady=3)
+        self._row(advanced, 1, "Workers (parallel batches)", ttk.Spinbox(advanced, from_=1, to=8, textvariable=self.workers))
+        ttk.Checkbutton(advanced, text="Ignore existing translations and start over", variable=self.restart).grid(row=2, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(advanced, text="Reuse translation memory", variable=self.reuse_memory).grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(advanced, text="Save successful translations to memory", variable=self.save_memory_enabled).grid(row=4, column=1, sticky="w", pady=3)
         ttk.Label(advanced, text="If old translations include asset filenames from an older parser run, use Backups > Clear Old Translation before translating again.", foreground="#555", wraplength=720).grid(row=4, column=1, columnspan=2, sticky="w", pady=8)
         advanced.columnconfigure(1, weight=1)
         tab.columnconfigure(2, weight=1)
@@ -276,6 +278,7 @@ class TranslatorGUI(tk.Tk):
             "source_lang": self.source_lang.get(),
             "target_lang": self.target_lang.get(),
             "batch_size": int(self.batch_size.get()),
+            "workers": int(self.workers.get()),
             "remember_api_key": self.remember_api_key.get(),
             "reuse_memory": self.reuse_memory.get(),
             "save_memory": self.save_memory_enabled.get(),
@@ -513,31 +516,40 @@ class TranslatorGUI(tk.Tk):
             save_results(results, translations_csv)
             self._log(f"Reused {reused} translations from memory")
         size = int(self.batch_size.get())
+        num_workers = max(1, min(8, int(self.workers.get())))
         source = None if self.source_lang.get().lower() == "auto" else self.source_lang.get()
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        for start in range(0, len(to_translate), size):
-            self._check_stopped()
-            batch = to_translate[start:start + size]
-            future = executor.submit(provider.translate_batch, batch, self.target_lang.get(), source)
-            while True:
-                try:
-                    batch_results = future.result(timeout=0.5)
-                    break
-                except concurrent.futures.TimeoutError:
-                    if self.stop_requested.is_set():
-                        future.cancel()
-                        executor.shutdown(wait=False)
-                        raise RuntimeError("Stopped by user")
-            self._check_stopped()
-            results.extend(batch_results)
-            results = self._dedupe_results(results, wanted_ids)
-            save_results(results, translations_csv)
-            if self.save_memory_enabled.get():
-                saved_memory = save_memory(work_memory, batch_results, self.target_lang.get(), source, self.provider.get())
-                save_memory(global_memory_path(), batch_results, self.target_lang.get(), source, self.provider.get())
-                if saved_memory:
-                    self._log(f"Saved {saved_memory} translations to memory")
-            self._log(f"Translated {min(len(results), len(entries))}/{len(entries)}")
+        target_lang = self.target_lang.get()
+        save_memory_enabled = self.save_memory_enabled.get()
+        provider_name = self.provider.get()
+        batches = [to_translate[s:s + size] for s in range(0, len(to_translate), size)]
+        results_lock = threading.Lock()
+
+        def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
+            return provider.translate_batch(batch, target_lang, source)
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+        futures: dict[concurrent.futures.Future, list[TextEntry]] = {
+            executor.submit(run_batch, batch): batch for batch in batches
+        }
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                if self.stop_requested.is_set():
+                    for f in futures:
+                        f.cancel()
+                    raise RuntimeError("Stopped by user")
+                batch_results = future.result()
+                with results_lock:
+                    results.extend(batch_results)
+                    results = self._dedupe_results(results, wanted_ids)
+                    save_results(results, translations_csv)
+                    if save_memory_enabled:
+                        saved_memory = save_memory(work_memory, batch_results, target_lang, source, provider_name)
+                        save_memory(global_memory_path(), batch_results, target_lang, source, provider_name)
+                        if saved_memory:
+                            self._log(f"Saved {saved_memory} translations to memory")
+                    self._log(f"Translated {min(len(results), len(entries))}/{len(entries)}")
+        finally:
+            executor.shutdown(wait=False)
         return results
 
     def translate(self) -> None:
