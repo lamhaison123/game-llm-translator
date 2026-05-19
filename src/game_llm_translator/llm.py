@@ -347,12 +347,16 @@ def _chat_completion_text(response: Any) -> str:
     message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
     if message is None:
         raise ValueError("OpenAI-compatible provider returned no message")
-    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    # Try content first, then reasoning_content fallback (some providers put output there)
+    if isinstance(message, dict):
+        content = message.get("content") or message.get("reasoning_content") or message.get("text")
+    else:
+        content = getattr(message, "content", None) or getattr(message, "reasoning_content", None) or getattr(message, "text", None)
     if content is None:
-        raise ValueError("OpenAI-compatible provider returned no message content")
+        raise ValueError(f"OpenAI-compatible provider returned no message content. finish_reason={getattr(choice, 'finish_reason', getattr(choice, 'finish_reason', '?') if isinstance(choice, dict) else '?')!r}")
     text = _content_text(content)
     if not text.strip():
-        raise ValueError("OpenAI-compatible provider returned empty message content")
+        raise ValueError(f"OpenAI-compatible provider returned empty message content. finish_reason={getattr(choice, 'finish_reason', '?')!r}")
     return text
 
 
@@ -374,7 +378,14 @@ class OpenAIProvider(LLMProvider):
                 {"role": "user", "content": _user_prompt(entries, target_lang, source_lang)},
             ],
         )
-        text = _chat_completion_text(response)
+        try:
+            text = _chat_completion_text(response)
+        except ValueError as exc:
+            try:
+                raw = response.model_dump_json() if hasattr(response, "model_dump_json") else str(response)
+            except Exception:
+                raw = str(response)
+            raise ValueError(f"{exc} | raw={raw[:500]}") from exc
         return _results_from_json(entries, text)
 
 
