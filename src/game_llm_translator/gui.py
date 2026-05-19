@@ -193,6 +193,8 @@ class TranslatorGUI(tk.Tk):
         self._action_button(buttons, "Delete Selected Backup(s)", self.delete_selected_backups).pack(side=tk.LEFT, padx=4)
         self._action_button(buttons, "Delete All Backups", self.delete_all_backups).pack(side=tk.LEFT, padx=4)
         self._action_button(buttons, "Clear Old Translation", self.clear_old_translation).pack(side=tk.RIGHT, padx=4)
+        self._action_button(buttons, "Clear Game Memory", self.clear_game_memory).pack(side=tk.RIGHT, padx=4)
+        self._action_button(buttons, "Clear Global Memory", self.clear_global_memory).pack(side=tk.RIGHT, padx=4)
         columns = ("kind", "path")
         self.backups_tree = ttk.Treeview(tab, columns=columns, show="headings", height=12, selectmode="extended")
         self.backups_tree.heading("kind", text="Backup type")
@@ -720,7 +722,47 @@ class TranslatorGUI(tk.Tk):
             self._log("Old translation outputs cleared. Start-over mode is now enabled.")
         self._run("clear old translation", job)
 
-    def refresh_backups(self) -> None:
+    def clear_game_memory(self) -> None:
+        game_dir_value = self.game_dir.get().strip()
+        if not game_dir_value:
+            messagebox.showwarning("Clear Game Memory", "No game folder selected.")
+            return
+        path = Path(game_dir_value) / "translator_work" / "translation_memory.csv"
+        if not path.exists():
+            messagebox.showinfo("Clear Game Memory", f"No game memory file found:\n{path}")
+            return
+        ok = messagebox.askyesno("Clear Game Memory", f"Delete per-game translation memory?\n\n{path}\n\nGlobal memory will not be affected.")
+        if not ok:
+            return
+
+        def job() -> None:
+            path.unlink()
+            self._log(f"Deleted game memory -> {path}")
+        self._run("clear game memory", job)
+
+    def clear_global_memory(self) -> None:
+        path = global_memory_path()
+        if not path.exists():
+            messagebox.showinfo("Clear Global Memory", f"No global memory file found:\n{path}")
+            return
+        try:
+            import csv as _csv
+            with open(path, encoding="utf-8-sig") as f:
+                count = sum(1 for _ in _csv.reader(f)) - 1
+        except Exception:
+            count = -1
+        count_str = f"{count} entries" if count >= 0 else "unknown entries"
+        ok = messagebox.askyesno(
+            "Clear Global Memory",
+            f"Delete global translation memory ({count_str})?\n\n{path}\n\nThis affects ALL games. This cannot be undone.",
+        )
+        if not ok:
+            return
+
+        def job() -> None:
+            path.unlink()
+            self._log(f"Deleted global memory ({count_str}) -> {path}")
+        self._run("clear global memory", job)
         if not hasattr(self, "backups_tree"):
             return
         for item in self.backups_tree.get_children():
