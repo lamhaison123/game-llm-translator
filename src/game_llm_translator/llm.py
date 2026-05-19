@@ -260,8 +260,8 @@ class GoogleWebMTLProvider(MTLProvider):
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, model: str):
-        self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    def __init__(self, model: str, api_key: str | None = None):
+        self.client = Anthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
@@ -301,7 +301,7 @@ class OpenAIProvider(LLMProvider):
 
 def make_provider(provider: str, model: str, api_key: str | None = None, api_base: str | None = None) -> LLMProvider:
     if provider == "anthropic":
-        return AnthropicProvider(model)
+        return AnthropicProvider(model, api_key)
     if provider == "openai":
         return OpenAIProvider(model, api_key, api_base)
     if provider in {"openai-compatible", "compatible", "custom-openai", "openrouter", "lmstudio", "ollama"}:

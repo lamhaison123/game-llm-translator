@@ -1,3 +1,0 @@
-[console_scripts]
-game-translator = game_llm_translator.cli:app
-game-translator-gui = game_llm_translator.gui:main
