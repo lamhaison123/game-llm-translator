@@ -803,14 +803,15 @@ class TranslatorGUI(tk.Tk):
         if not path.exists():
             messagebox.showinfo("Clear Game Memory", f"No game memory file found:\n{path}")
             return
-        ok = messagebox.askyesno("Clear Game Memory", f"Delete per-game translation memory?\n\n{path}\n\nGlobal memory will not be affected.")
+        ok = messagebox.askyesno("Clear Game Memory", f"Delete per-game translation memory?\n\n{path}\n\nGlobal memory will not be affected.\n\nNote: if a translate job is currently running, it may recreate this file as it saves new results.")
         if not ok:
             return
-
-        def job() -> None:
+        try:
             path.unlink()
             self._log(f"Deleted game memory -> {path}")
-        self._run("clear game memory", job)
+            messagebox.showinfo("Clear Game Memory", f"Deleted:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Clear Game Memory", f"Failed to delete: {exc}")
 
     def clear_global_memory(self) -> None:
         path = global_memory_path()
@@ -826,15 +827,16 @@ class TranslatorGUI(tk.Tk):
         count_str = f"{count} entries" if count >= 0 else "unknown entries"
         ok = messagebox.askyesno(
             "Clear Global Memory",
-            f"Delete global translation memory ({count_str})?\n\n{path}\n\nThis affects ALL games. This cannot be undone.",
+            f"Delete global translation memory ({count_str})?\n\n{path}\n\nThis affects ALL games. This cannot be undone.\n\nNote: if a translate job is currently running, it may recreate this file as it saves new results. Stop translate first if you want to fully clear.",
         )
         if not ok:
             return
-
-        def job() -> None:
+        try:
             path.unlink()
             self._log(f"Deleted global memory ({count_str}) -> {path}")
-        self._run("clear global memory", job)
+            messagebox.showinfo("Clear Global Memory", f"Deleted ({count_str}):\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Clear Global Memory", f"Failed to delete: {exc}")
 
     def refresh_backups(self) -> None:
         if not hasattr(self, "backups_tree"):
