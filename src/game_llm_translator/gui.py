@@ -543,15 +543,14 @@ class TranslatorGUI(tk.Tk):
         def _is_retryable(exc: Exception) -> tuple[bool, float]:
             """Return (retryable, suggested_delay_seconds)."""
             msg = str(exc)
-            # Cloudflare 524 with explicit retry_after
-            if "524" in msg and "retry_after" in msg:
-                try:
-                    import json as _json
-                    start = msg.index("{")
-                    data = _json.loads(msg[start:msg.rindex("}") + 1])
-                    return True, float(data.get("retry_after", 30))
-                except Exception:
-                    return True, 30.0
+            # Cloudflare 524 / generic with explicit retry_after (Python dict or JSON format)
+            if "retry_after" in msg:
+                import re as _re
+                match = _re.search(r"['\"]retry_after['\"]\s*:\s*(\d+(?:\.\d+)?)", msg)
+                if match:
+                    return True, float(match.group(1))
+            if "524" in msg:
+                return True, 60.0
             # 429 rate limit
             if "429" in msg:
                 return True, 10.0
@@ -560,12 +559,11 @@ class TranslatorGUI(tk.Tk):
                 return True, 5.0
             # timeout keywords
             if any(kw in msg.lower() for kw in ("timeout", "timed out", "connection")):
-                return True, 10.0
+                return True, 15.0
             return False, 0.0
 
         def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
             max_retries = 3
-            delay = 0.0
             for attempt in range(max_retries + 1):
                 if self.stop_requested.is_set():
                     raise RuntimeError("Stopped by user")
@@ -576,9 +574,8 @@ class TranslatorGUI(tk.Tk):
                 except Exception as exc:
                     retryable, suggested = _is_retryable(exc)
                     if retryable and attempt < max_retries:
-                        delay = max(suggested, 2.0 * (attempt + 1))
+                        delay = max(suggested, 5.0 * (attempt + 1))
                         self._log(f"Batch error (retry {attempt + 1}/{max_retries} in {delay:.0f}s): {exc}")
-                        # interruptible sleep
                         end = time.monotonic() + delay
                         while time.monotonic() < end:
                             if self.stop_requested.is_set():
@@ -591,6 +588,7 @@ class TranslatorGUI(tk.Tk):
         futures: dict[concurrent.futures.Future, list[TextEntry]] = {
             executor.submit(run_batch, batch): batch for batch in batches
         }
+        failed_batches: list[list[TextEntry]] = []
         try:
             for future in concurrent.futures.as_completed(futures):
                 if self.stop_requested.is_set():
@@ -603,8 +601,12 @@ class TranslatorGUI(tk.Tk):
                 except RuntimeError:
                     raise
                 except Exception as exc:
-                    self._log(f"Batch failed after retries (keeping source): {exc}")
-                    batch_results = [TranslationResult(e.file, e.key, e.source, e.source, e.context) for e in batch]
+                    self._log(f"Batch failed after retries (will retry at end): {exc}")
+                    failed_batches.append(batch)
+                    with results_lock:
+                        translated_count += len(batch)
+                        self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)} ({len(failed_batches)} batch(es) deferred)")
+                    continue
                 with results_lock:
                     translated_count += len(batch)
                     results.extend(batch_results)
@@ -618,6 +620,42 @@ class TranslatorGUI(tk.Tk):
                     self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
         finally:
             executor.shutdown(wait=False)
+
+        # Final retry pass for failed batches: serial, longer delays, smaller batches
+        if failed_batches and not self.stop_requested.is_set():
+            self._log(f"--- Retrying {len(failed_batches)} failed batch(es) with longer delays ---")
+            time.sleep(min(60.0, 5.0))  # short cooldown before retry pass
+            still_failed: list[list[TextEntry]] = []
+            for batch in failed_batches:
+                if self.stop_requested.is_set():
+                    still_failed.append(batch)
+                    continue
+                # Split larger batches in half to reduce per-request load
+                sub_batches = [batch] if len(batch) <= 10 else [batch[:len(batch)//2], batch[len(batch)//2:]]
+                for sub in sub_batches:
+                    if self.stop_requested.is_set():
+                        still_failed.append(sub)
+                        continue
+                    try:
+                        sub_results = run_batch(sub)
+                        with results_lock:
+                            results.extend(sub_results)
+                            results = self._dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+                            if save_memory_enabled:
+                                save_memory(work_memory, sub_results, target_lang, source, provider_name)
+                                save_memory(global_memory_path(), sub_results, target_lang, source, provider_name)
+                            self._log(f"Recovered {len(sub_results)} entries from deferred batch")
+                    except Exception as exc:
+                        self._log(f"Deferred batch still failed (keeping source): {exc}")
+                        still_failed.append(sub)
+            # Fallback to source for batches that still failed
+            for batch in still_failed:
+                with results_lock:
+                    fallback_results = [TranslationResult(e.file, e.key, e.source, e.source, e.context) for e in batch]
+                    results.extend(fallback_results)
+                    results = self._dedupe_results(results, wanted_ids)
+                    save_results(results, translations_csv)
         # summary report
         total = len(entries)
         translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
