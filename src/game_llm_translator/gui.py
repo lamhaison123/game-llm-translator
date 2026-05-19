@@ -763,6 +763,8 @@ class TranslatorGUI(tk.Tk):
             path.unlink()
             self._log(f"Deleted global memory ({count_str}) -> {path}")
         self._run("clear global memory", job)
+
+    def refresh_backups(self) -> None:
         if not hasattr(self, "backups_tree"):
             return
         for item in self.backups_tree.get_children():
