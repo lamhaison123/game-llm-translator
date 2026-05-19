@@ -527,8 +527,52 @@ class TranslatorGUI(tk.Tk):
         results_lock = threading.Lock()
         translated_count = len(results)  # already done before this loop
 
+        def _is_retryable(exc: Exception) -> tuple[bool, float]:
+            """Return (retryable, suggested_delay_seconds)."""
+            msg = str(exc)
+            # Cloudflare 524 with explicit retry_after
+            if "524" in msg and "retry_after" in msg:
+                try:
+                    import json as _json
+                    start = msg.index("{")
+                    data = _json.loads(msg[start:msg.rindex("}") + 1])
+                    return True, float(data.get("retry_after", 30))
+                except Exception:
+                    return True, 30.0
+            # 429 rate limit
+            if "429" in msg:
+                return True, 10.0
+            # 503 / 502 / 500 server errors
+            if any(code in msg for code in ("503", "502", "500")):
+                return True, 5.0
+            # timeout keywords
+            if any(kw in msg.lower() for kw in ("timeout", "timed out", "connection")):
+                return True, 10.0
+            return False, 0.0
+
         def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
-            return provider.translate_batch(batch, target_lang, source)
+            max_retries = 3
+            delay = 0.0
+            for attempt in range(max_retries + 1):
+                if self.stop_requested.is_set():
+                    raise RuntimeError("Stopped by user")
+                try:
+                    return provider.translate_batch(batch, target_lang, source)
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    retryable, suggested = _is_retryable(exc)
+                    if retryable and attempt < max_retries:
+                        delay = max(suggested, 2.0 * (attempt + 1))
+                        self._log(f"Batch error (retry {attempt + 1}/{max_retries} in {delay:.0f}s): {exc}")
+                        # interruptible sleep
+                        end = time.monotonic() + delay
+                        while time.monotonic() < end:
+                            if self.stop_requested.is_set():
+                                raise RuntimeError("Stopped by user")
+                            time.sleep(0.5)
+                    else:
+                        raise
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
         futures: dict[concurrent.futures.Future, list[TextEntry]] = {
@@ -543,8 +587,10 @@ class TranslatorGUI(tk.Tk):
                 batch = futures[future]
                 try:
                     batch_results = future.result()
+                except RuntimeError:
+                    raise
                 except Exception as exc:
-                    self._log(f"Batch error (keeping source): {exc}")
+                    self._log(f"Batch failed after retries (keeping source): {exc}")
                     batch_results = [TranslationResult(e.file, e.key, e.source, e.source, e.context) for e in batch]
                 with results_lock:
                     translated_count += len(batch)
