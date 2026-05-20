@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import TextEntry
-from .rpg_maker_common import extract_rpg_maker_json
+from .rpg_maker_common import extract_rpg_maker_json_entries
 
 MZ_PLUGIN_TEXT_ARGS = {
     ("TextPicture", "set"): {"text"},
@@ -28,5 +28,12 @@ def _extract_mz_plugin_text(command: dict[str, Any], file: Path, prefix: str, co
     return entries
 
 
-def extract_rpg_maker_mz(game_dir: Path) -> list[TextEntry]:
+def extract_rpg_maker_mz_detailed(game_dir: Path) -> tuple[list[TextEntry], list[str]]:
+    from .rpg_maker_common import extract_rpg_maker_json
+
     return extract_rpg_maker_json(game_dir, plugin_text_extractor=_extract_mz_plugin_text)
+
+
+def extract_rpg_maker_mz(game_dir: Path) -> list[TextEntry]:
+    entries, _warnings = extract_rpg_maker_mz_detailed(game_dir)
+    return entries

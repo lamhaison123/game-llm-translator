@@ -5,6 +5,7 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.parse import quote_plus
 
@@ -36,6 +37,20 @@ LANG_CODES = {
     "es": "es",
     "russian": "ru",
     "ru": "ru",
+    "portuguese": "pt",
+    "pt": "pt",
+    "thai": "th",
+    "th": "th",
+    "indonesian": "id",
+    "id": "id",
+    "italian": "it",
+    "it": "it",
+    "polish": "pl",
+    "pl": "pl",
+    "turkish": "tr",
+    "tr": "tr",
+    "arabic": "ar",
+    "ar": "ar",
 }
 
 
@@ -43,7 +58,11 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
     if not language:
         return default
     normalized = language.strip().lower()
-    return LANG_CODES.get(normalized, normalized[:2])
+    if normalized in LANG_CODES:
+        return LANG_CODES[normalized]
+    if len(normalized) == 2 and normalized.isalpha():
+        return normalized
+    raise ValueError(f"Unsupported language: {language!r}. Use a known name (e.g. Vietnamese) or ISO code (vi).")
 
 TOKEN_PATTERN = re.compile(
     r"(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$|!><^\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|<[^<>]{1,120}>|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
@@ -72,7 +91,7 @@ SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, vi
 
 ## Output format
 - Return a strict JSON array and nothing else. No markdown fences, no explanation, no extra text.
-- Each element must have exactly: {"id": "...", "key": "...", "target": "..."}
+- Each element must have exactly: {"id": "...", "key": "...", "target": "..."} — "id" is REQUIRED (format: file_path + separator + key).
 - If you cannot translate an item, copy the source text into target unchanged.
 
 ## Translation rules
@@ -148,7 +167,13 @@ def _response_preview(text: str, limit: int = 300) -> str:
     return compact[:limit]
 
 
-def _parse_translation_json(text: str) -> list[dict[str, Any]]:
+@dataclass(slots=True)
+class ParseStats:
+    parsed: int = 0
+    skipped: int = 0
+
+
+def _parse_translation_json(text: str) -> tuple[list[dict[str, Any]], ParseStats]:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").removeprefix("json").strip()
@@ -159,26 +184,42 @@ def _parse_translation_json(text: str) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("LLM response must be a JSON array")
     items: list[dict[str, Any]] = []
+    skipped = 0
     for item in data:
         if not isinstance(item, dict) or not ("id" in item or "key" in item) or "target" not in item:
+            skipped += 1
             continue
         if item["target"] is None:
+            skipped += 1
             continue
-        item = dict(item)
-        item["target"] = str(item["target"])
-        items.append(item)
-    return items
+        row = dict(item)
+        row["target"] = str(row["target"])
+        items.append(row)
+    return items, ParseStats(parsed=len(items), skipped=skipped)
 
 
-def _results_from_json(entries: list[TextEntry], text: str) -> list[TranslationResult]:
-    data = _parse_translation_json(text)
+def _estimate_output_tokens(entries: list[TextEntry]) -> int:
+    chars = sum(len(e.source) + len(e.context_text) for e in entries)
+    return max(1024, min(int(chars * 1.5) + 512, 16384))
+
+
+def _results_from_json(entries: list[TextEntry], text: str) -> tuple[list[TranslationResult], ParseStats]:
+    data, stats = _parse_translation_json(text)
     by_id = {str(item["id"]): str(item["target"]) for item in data if "id" in item}
-    by_key = {str(item["key"]): str(item["target"]) for item in data if "key" in item}
+    unique_files = {entry.file.as_posix() for entry in entries}
+    by_key: dict[str, str] = {}
+    if len(unique_files) == 1:
+        by_key = {str(item["key"]): str(item["target"]) for item in data if "key" in item}
     results: list[TranslationResult] = []
     for entry in entries:
-        target = by_id.get(text_identity_id(entry.file, entry.key), by_key.get(entry.key, entry.source))
+        entry_id = text_identity_id(entry.file, entry.key)
+        target = by_id.get(entry_id)
+        if target is None and by_key:
+            target = by_key.get(entry.key)
+        if target is None:
+            target = entry.source
         results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context))
-    return results
+    return results, stats
 
 
 class LLMProvider(ABC):
@@ -378,14 +419,18 @@ class AnthropicProvider(LLMProvider):
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
+        max_tokens = min(_estimate_output_tokens(entries), 8192)
         message = self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": _user_prompt(entries, target_lang, source_lang)}],
         )
         text = _anthropic_message_text(message)
-        return _results_from_json(entries, text)
+        if getattr(message, "stop_reason", None) == "max_tokens":
+            raise ValueError("Anthropic response truncated (max_tokens); retry with smaller batch")
+        results, _stats = _results_from_json(entries, text)
+        return results
 
 
 def _chat_completion_text(response: Any) -> str:
@@ -438,7 +483,14 @@ class OpenAIProvider(LLMProvider):
             except Exception:
                 raw = str(response)
             raise ValueError(f"{exc} | raw={raw[:500]}") from exc
-        return _results_from_json(entries, text)
+        choices = getattr(response, "choices", None) or []
+        if choices:
+            choice = choices[0]
+            finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+            if finish == "length":
+                raise ValueError("OpenAI response truncated (finish_reason=length); retry with smaller batch")
+        results, _stats = _results_from_json(entries, text)
+        return results
 
 
 def make_provider(provider: str, model: str, api_key: str | None = None, api_base: str | None = None) -> LLMProvider:

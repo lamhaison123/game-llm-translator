@@ -8,12 +8,14 @@ Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs 
 
 - **RPG Maker MV/MZ**: extract `www/data/*.json` or `data/*.json`, translate, and apply while preserving nested folder structure
 - **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` files (`original=translation` format); preserve regex rules/scoping directives in processed files, skip resizer files
-- **Parallel translation**: GUI pipeline supports 1-8 workers, automatic or manual batch size; CLI translation is sequential
-- **Source pre-deduplication**: GUI pipeline groups duplicate source entries, calls the LLM once, then fans out results to matching entries (reduces API calls by 10-30%)
-- **Smart retry**: GUI pipeline reads `retry_after` from Cloudflare 524 errors, defers failed batches, retries them at the end with longer delays, and falls back to source text if still failing
+- **Shared translate pipeline** (`translate_pipeline.py`): GUI, CLI, and `auto` use the same retry, memory, dedup, and checkpoint logic
+- **Parallel translation**: 1-8 workers on GUI, `translate`, `pipeline`, and `auto` (`--workers`)
+- **Source pre-deduplication**: groups by `(source, context_text)`, calls the LLM once, fans out to siblings (reduces API calls)
+- **Smart retry**: reads `retry_after` from Cloudflare 524, defers failed batches, retries with backoff, falls back to source if still failing
+- **Placeholder checks**: warns when RPG control codes (`\\V[1]`, `%1`, etc.) are missing from translations
 - **Translation memory**: per-game and global memory, file-locked to avoid corruption during parallel writes
 - **Atomic CSV writes**: temporary file + `os.replace`, safe against crashes during save
-- **Glossary CSV**: GUI translation can enforce fixed term translations by injecting glossary entries into each batch system prompt
+- **Glossary CSV**: inject fixed terms into the LLM system prompt (GUI or `--glossary` on CLI)
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
 - **Cheat plugin**: install/uninstall RPG Maker MV/MZ Cheat UI Plugin (prefers optional bundled archive/cache, falls back to GitHub release)
 - **Desktop GUI** (PySide6 / Qt6):
@@ -80,6 +82,8 @@ game-translator auto "D:/Games/MyRPG" \
   --target Vietnamese \
   --in-place           # write directly into the game after auto backup
   --restart            # ignore existing translations and translate from scratch
+  --glossary terms.csv
+  --workers 4
 ```
 
 Scan before translating to see how much text will be processed:

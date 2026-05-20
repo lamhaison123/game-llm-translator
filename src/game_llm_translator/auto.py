@@ -9,10 +9,9 @@ import time
 
 from .app_logging import log_event
 from .csv_store import load_results, save_entries, save_results
-from .llm import make_provider
 from .models import TextEntry, TranslationResult, text_identity
-from .translation_memory import global_memory_path, load_memory, save_memory
-from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, is_supported_json_engine
+from .translate_pipeline import TranslateOptions, dedupe_results, run_translate
+from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, extract_rpg_maker_detailed, is_supported_json_engine
 from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
@@ -27,14 +26,16 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
         engine = "unity-xunity"
     data_dir = _data_dir(game_dir)
     json_files = sorted(data_dir.glob("*.json")) if data_dir.exists() else []
+    extract_warnings: list[str] = []
     if engine == "unity-xunity":
         entries = extract_xunity(game_dir)
     elif is_supported_json_engine(engine):
-        entries = extract_rpg_maker(game_dir)
+        entries, extract_warnings = extract_rpg_maker_detailed(game_dir)
     else:
         entries = []
     contexts = Counter(entry.context for entry in entries)
     files = Counter(entry.file.name for entry in entries)
+    supported = (is_supported_json_engine(engine) or engine == "unity-xunity") and engine not in {"xp", "vx", "vx-ace"}
     return {
         "game_dir": str(game_dir),
         "engine": engine or "unknown",
@@ -43,7 +44,13 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
         "text_entries": len(entries),
         "contexts": dict(contexts),
         "top_files": dict(files.most_common(10)),
-        "supported_auto_apply": is_supported_json_engine(engine) or engine == "unity-xunity",
+        "supported_auto_apply": supported,
+        "unsupported_reason": (
+            f"RPG Maker {engine.upper()} (RGSS) is not supported; use MV/MZ JSON games."
+            if engine in {"xp", "vx", "vx-ace"}
+            else ""
+        ),
+        "extract_warnings": extract_warnings,
         "recommended_command": f'game-translator auto "{game_dir}" --provider {provider} --target {target_lang}',
     }
 
@@ -53,22 +60,12 @@ def write_analysis_report(report: dict[str, object], file: Path) -> None:
     file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _dedupe_results(results: list[TranslationResult], wanted_ids: set[tuple[str, str]] | None = None) -> list[TranslationResult]:
-    by_id: dict[tuple[str, str], TranslationResult] = {}
-    for result in results:
-        identity = text_identity(result.file, result.key)
-        if wanted_ids is not None and identity not in wanted_ids:
-            continue
-        by_id[identity] = result
-    return list(by_id.values())
-
-
 def _load_existing_results(translations_csv: Path, entries: list) -> list[TranslationResult]:
     if not translations_csv.exists():
         return []
     wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
     existing = load_results(translations_csv)
-    return _dedupe_results(existing, wanted_ids)
+    return dedupe_results(existing, wanted_ids)
 
 
 def auto_translate_game(
@@ -86,6 +83,8 @@ def auto_translate_game(
     restart: bool = False,
     use_memory: bool = True,
     memory_paths: list[Path] | None = None,
+    glossary_path: Path | None = None,
+    workers: int = 1,
     progress: Callable[[str], None] | None = None,
 ) -> Path:
     engine = detect_rpg_maker(game_dir)
@@ -95,6 +94,10 @@ def auto_translate_game(
     is_xunity = engine is None and xunity_dir is not None
     if engine is None:
         engine = "unity-xunity"
+    if engine in {"xp", "vx", "vx-ace"}:
+        raise ValueError(
+            f"Detected RPG Maker {engine.upper()}; only MV/MZ JSON engines are supported for auto-translate."
+        )
     if not is_xunity and not is_supported_json_engine(engine):
         raise ValueError(f"Detected {engine}, but automatic apply currently supports RPG Maker MV/MZ JSON or Unity XUnity AutoTranslator games only")
 
@@ -104,7 +107,15 @@ def auto_translate_game(
     translations_csv = work_dir / "translations.csv"
     out_dir = work_dir / "translated_data"
 
-    entries = extract_xunity(game_dir) if is_xunity else extract_rpg_maker(game_dir)
+    extract_warnings: list[str] = []
+    if is_xunity:
+        entries = extract_xunity(game_dir)
+    else:
+        entries, extract_warnings = extract_rpg_maker_detailed(game_dir)
+        for message in extract_warnings:
+            log_event(message, level="WARN")
+            if progress:
+                progress(message)
     log_event(f"Extracted {len(entries)} text entries from {game_dir}")
     if progress:
         progress(f"Extracted {len(entries)} text entries")
@@ -113,64 +124,37 @@ def auto_translate_game(
     report.update({"texts_csv": str(texts_csv), "translations_csv": str(translations_csv), "out_dir": str(out_dir)})
     write_analysis_report(report, work_dir / "analysis.json")
 
-    translator = make_provider(provider, model, api_key, api_base)
     existing_results: list[TranslationResult] = [] if restart else _load_existing_results(translations_csv, entries)
     resumed_entries = len(existing_results)
-    results: list[TranslationResult] = list(existing_results)
-    completed = {text_identity(result.file, result.key) for result in results if result.target.strip() and result.target != result.source}
-    memory = {
-        result.source: result.target
-        for result in results
-        if result.source.strip() and result.target.strip() and result.target != result.source
-    }
-    per_game_memory = work_dir / "translation_memory.csv"
-    active_memory_paths = (memory_paths or []) + [global_memory_path(), per_game_memory]
-    if use_memory:
-        persistent_memory = load_memory(active_memory_paths, target_lang, source_lang)
-        memory.update(persistent_memory)
-        log_event(f"Loaded {len(persistent_memory)} memory entries")
-        if progress:
-            progress(f"Loaded {len(persistent_memory)} memory entries")
-    pending_entries = [entry for entry in entries if text_identity(entry.file, entry.key) not in completed]
-    initial_pending_entries = len(pending_entries)
-    reused = 0
-    to_translate: list[TextEntry] = []
-    for entry in pending_entries:
-        if entry.source in memory:
-            results.append(TranslationResult(entry.file, entry.key, entry.source, memory[entry.source], entry.context))
-            completed.add(text_identity(entry.file, entry.key))
-            reused += 1
-        else:
-            to_translate.append(entry)
+    initial_pending_entries = len(entries) - resumed_entries
     if progress:
         progress(f"Resume: {resumed_entries} done, {initial_pending_entries} pending")
-        if reused:
-            progress(f"Reused {reused} translations from memory")
-    if reused:
-        log_event(f"Reused {reused} translations from memory")
-    if results:
-        results = _dedupe_results(results, {text_identity(entry.file, entry.key) for entry in entries})
-        save_results(results, translations_csv)
-    if batch_size <= 0:
-        batch_size = 30
-    for start in range(0, len(to_translate), batch_size):
-        batch = to_translate[start:start + batch_size]
-        batch_results = translator.translate_batch(batch, target_lang, source_lang)
-        results.extend(batch_results)
-        results = _dedupe_results(results, {text_identity(entry.file, entry.key) for entry in entries})
-        for result in batch_results:
-            if result.source.strip() and result.target.strip() and result.target != result.source:
-                memory[result.source] = result.target
-        save_results(results, translations_csv)
-        if use_memory:
-            saved_memory = save_memory(per_game_memory, batch_results, target_lang, source_lang, provider)
-            save_memory(global_memory_path(), batch_results, target_lang, source_lang, provider)
-            if progress and saved_memory:
-                progress(f"Saved {saved_memory} translations to memory")
-            if saved_memory:
-                log_event(f"Saved {saved_memory} translations to memory")
-        if progress:
-            progress(f"Translated {min(len(results), len(entries))}/{len(entries)} entries")
+
+    options = TranslateOptions(
+        target_lang=target_lang,
+        source_lang=source_lang,
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        api_base=api_base,
+        batch_size=batch_size,
+        workers=max(1, min(8, workers)),
+        use_memory=use_memory,
+        memory_paths=memory_paths,
+        glossary_path=glossary_path,
+        restart=restart,
+        on_log=progress,
+    )
+    results, translate_report = run_translate(
+        entries,
+        translations_csv,
+        options,
+        on_progress=lambda done, total: progress(f"Translated {done}/{total} entries") if progress else None,
+    )
+    if progress and translate_report.reused_memory:
+        progress(f"Reused {translate_report.reused_memory} translations from memory")
+    if progress and translate_report.placeholder_warnings:
+        progress(f"Placeholder warnings: {translate_report.placeholder_warnings}")
 
     if progress:
         progress("Applying translated files")
@@ -195,6 +179,12 @@ def auto_translate_game(
         "remaining_entries": max(len(entries) - len(results), 0),
         "restart": restart,
         "in_place": in_place,
+        "extract_warnings": extract_warnings,
+        "translated_count": translate_report.translated,
+        "fallback_count": translate_report.fallback,
+        "placeholder_warnings": translate_report.placeholder_warnings,
+        "batches_retried": translate_report.batches_retried,
+        "batches_failed": translate_report.batches_failed,
     }
     if in_place:
         if is_xunity:

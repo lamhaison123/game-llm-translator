@@ -8,12 +8,14 @@ Tool dịch text game RPG Maker MV/MZ và Unity (XUnity AutoTranslator) bằng L
 
 - **RPG Maker MV/MZ**: extract `www/data/*.json` (hoặc `data/*.json`), dịch, apply giữ nguyên cấu trúc nested folders
 - **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` (format `original=translation`); preserve regex rules/scoping directives trong file xử lý, skip resizer files
-- **Parallel translate**: GUI pipeline hỗ trợ 1-8 workers, batch size auto hoặc tự chỉnh; CLI translate tuần tự
-- **Pre-dedup theo source**: GUI pipeline gom entries trùng text để gọi LLM 1 lần rồi fan-out cho các entries còn lại (giảm 10-30% API calls)
-- **Retry thông minh**: GUI pipeline đọc `retry_after` từ Cloudflare 524, defer batch failed → retry cuối job với delay dài hơn, fallback source nếu vẫn fail
+- **Pipeline dịch chung** (`translate_pipeline.py`): GUI, CLI và `auto` dùng chung retry, memory, dedup, checkpoint
+- **Parallel translate**: 1-8 workers trên GUI, `translate`, `pipeline`, `auto` (`--workers`)
+- **Pre-dedup**: gom theo `(source, context_text)`, gọi LLM 1 lần rồi fan-out (giảm API calls)
+- **Retry thông minh**: đọc `retry_after` từ Cloudflare 524, defer batch, retry backoff, fallback source nếu vẫn fail
+- **Kiểm tra placeholder**: cảnh báo khi thiếu mã RPG (`\\V[1]`, `%1`, …) trong bản dịch
 - **Translation memory**: per-game + global, file-locked để tránh corrupt khi parallel write
 - **Atomic CSV writes**: tmp file + `os.replace`, an toàn khi crash giữa lúc save
-- **Glossary CSV**: GUI translation hỗ trợ term/translation cố định, inject vào system prompt mỗi batch
+- **Glossary CSV**: term cố định trong system prompt (GUI hoặc `--glossary` trên CLI)
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
 - **Cheat plugin**: cài/gỡ RPG Maker MV/MZ Cheat UI Plugin (ưu tiên cache/optional bundled archive, fallback GitHub release)
 - **GUI desktop** (PySide6 / Qt6):
@@ -80,6 +82,8 @@ game-translator auto "D:/Games/MyRPG" \
   --target Vietnamese \
   --in-place           # ghi trực tiếp vào game (auto backup trước)
   --restart            # bỏ qua bản dịch cũ, dịch lại từ đầu
+  --glossary terms.csv
+  --workers 4
 ```
 
 Scan trước khi dịch để xem có bao nhiêu text:

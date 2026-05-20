@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+from .llm import TOKEN_PATTERN
+
+_PLACEHOLDER_RE = TOKEN_PATTERN
+
+
+def translation_warnings(source: str, target: str) -> list[str]:
+    """Return non-fatal quality warnings for a source/target pair."""
+    if not target.strip() or target == source:
+        return []
+    warnings: list[str] = []
+    for match in _PLACEHOLDER_RE.finditer(source):
+        token = match.group(0)
+        if token not in target:
+            warnings.append(f"missing placeholder {token!r}")
+    src_newlines = source.count("\n")
+    tgt_newlines = target.count("\n")
+    if src_newlines and tgt_newlines != src_newlines:
+        warnings.append(f"newline count mismatch ({src_newlines} vs {tgt_newlines})")
+    if len(target) > len(source) * 4 and len(source) < 80:
+        warnings.append("translation much longer than source (possible UI overflow)")
+    return warnings

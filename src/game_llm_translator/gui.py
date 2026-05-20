@@ -49,8 +49,8 @@ from .app_logging import log_event, logs_dir
 from .auto import analyze_game, auto_translate_game, write_analysis_report
 from .csv_store import load_entries, load_results, save_results
 from .editor import open_file_editor
-from .glossary import format_glossary_for_prompt, load_glossary
-from .llm import make_provider
+from .translate_pipeline import TranslateOptions, run_translate
+from .translation_memory import global_memory_path
 from .models import TextEntry, TranslationResult, text_identity
 from .rpg_maker import (
     apply_rpg_maker,
@@ -66,7 +66,6 @@ from .rpg_maker_cheat import (
     detect_cheat_engine,
     remove_cheat,
 )
-from .translation_memory import global_memory_path, load_memory, save_memory
 from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
@@ -908,176 +907,33 @@ class TranslatorGUI(QMainWindow):
         return min(max(1, int(target_tokens / avg_tokens)), 60)
 
     def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
-        provider = make_provider(self.provider_combo.currentText(), self.model_edit.text(), self.api_key_edit.text().strip() or None, self.api_base_edit.text().strip() or None)
         gp = self.glossary_path_edit.text().strip()
-        if gp:
-            ge = load_glossary(Path(gp))
-            if ge:
-                provider.set_glossary(format_glossary_for_prompt(ge))
-                self._log(f"Glossary: {len(ge)} entries loaded from {gp}")
-        existing = [] if self.restart_check.isChecked() else (load_results(translations_csv) if translations_csv.exists() else [])
-        wanted_ids = {text_identity(e.file, e.key) for e in entries}
-        results = self._dedupe_results(existing, wanted_ids)
-        completed = {text_identity(r.file, r.key) for r in results if r.target.strip() and r.target != r.source}
-        memory = {r.source: r.target for r in results if r.source.strip() and r.target.strip() and r.target != r.source}
-        work_memory = translations_csv.parent / "translation_memory.csv"
-        if self.reuse_memory_check.isChecked():
-            persistent = load_memory([global_memory_path(), work_memory], self.target_lang_edit.text(), None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text())
-            memory.update(persistent)
-            if persistent:
-                self._log(f"Loaded {len(persistent)} memory entries")
-        pending = [e for e in entries if text_identity(e.file, e.key) not in completed]
-        to_translate: list[TextEntry] = []
-        reused = 0
-        for e in pending:
-            if e.source in memory:
-                results.append(TranslationResult(e.file, e.key, e.source, memory[e.source], e.context))
-                reused += 1
-            else:
-                to_translate.append(e)
-        if reused:
-            results = self._dedupe_results(results, wanted_ids)
-            save_results(results, translations_csv)
-            self._log(f"Reused {reused} translations from memory")
-
-        # Pre-dedup by source
-        groups: dict[str, list[TextEntry]] = {}
-        for e in to_translate:
-            groups.setdefault(e.source, []).append(e)
-        unique = [g[0] for g in groups.values()]
-        if len(to_translate) - len(unique):
-            self._log(f"Pre-dedup: {len(to_translate)} -> {len(unique)} unique sources")
-        to_translate = unique
-
-        raw_size = int(self.batch_size_spin.value())
-        size = self._estimate_batch_size(to_translate) if raw_size == 0 else raw_size
-        if raw_size == 0:
-            self._log(f"Auto batch size: {size}")
-        num_workers = max(1, min(8, int(self.workers_spin.value())))
-        source = None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text()
-        target_lang = self.target_lang_edit.text()
-        save_mem_enabled = self.save_memory_check.isChecked()
-        provider_name = self.provider_combo.currentText()
-        batches = [to_translate[s:s + size] for s in range(0, len(to_translate), size)]
-        results_lock = threading.Lock()
-        translated_count = len(results)
-
-        def _is_retryable(exc: Exception) -> tuple[bool, float]:
-            msg = str(exc)
-            if "retry_after" in msg:
-                import re as _re
-                m = _re.search(r"['\"]retry_after['\"]\s*:\s*(\d+(?:\.\d+)?)", msg)
-                if m:
-                    return True, float(m.group(1))
-            if "524" in msg:
-                return True, 60.0
-            if "429" in msg:
-                return True, 10.0
-            if any(c in msg for c in ("503", "502", "500")):
-                return True, 5.0
-            if any(k in msg.lower() for k in ("timeout", "timed out", "connection")):
-                return True, 15.0
-            return False, 0.0
-
-        def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
-            for attempt in range(4):
-                if self.stop_requested.is_set():
-                    raise RuntimeError("Stopped by user")
-                try:
-                    return provider.translate_batch(batch, target_lang, source)
-                except RuntimeError:
-                    raise
-                except Exception as exc:
-                    retryable, suggested = _is_retryable(exc)
-                    if retryable and attempt < 3:
-                        delay = max(suggested, 5.0 * (attempt + 1))
-                        self._log(f"Batch error (retry {attempt + 1}/3 in {delay:.0f}s): {exc}")
-                        end = time.monotonic() + delay
-                        while time.monotonic() < end:
-                            if self.stop_requested.is_set():
-                                raise RuntimeError("Stopped by user")
-                            time.sleep(0.5)
-                    else:
-                        raise
-
-        def fanout(batch_results: list[TranslationResult]) -> list[TranslationResult]:
-            expanded = []
-            for r in batch_results:
-                siblings = groups.get(r.source, [])
-                for e in siblings:
-                    expanded.append(TranslationResult(e.file, e.key, e.source, r.target, e.context))
-                if not siblings:
-                    expanded.append(r)
-            return expanded
-
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
-        futures = {executor.submit(run_batch, b): b for b in batches}
-        failed_batches: list[list[TextEntry]] = []
-        try:
-            for future in concurrent.futures.as_completed(futures):
-                if self.stop_requested.is_set():
-                    for f in futures:
-                        f.cancel()
-                    raise RuntimeError("Stopped by user")
-                batch = futures[future]
-                try:
-                    br = future.result()
-                except RuntimeError:
-                    raise
-                except Exception as exc:
-                    self._log(f"Batch failed (deferred): {exc}")
-                    failed_batches.append(batch)
-                    with results_lock:
-                        translated_count += sum(len(groups.get(e.source, [e])) for e in batch)
-                        self.signals.progress.emit(min(translated_count, len(entries)), len(entries))
-                    continue
-                with results_lock:
-                    expanded = fanout(br)
-                    translated_count += len(expanded)
-                    results.extend(expanded)
-                    results = self._dedupe_results(results, wanted_ids)
-                    save_results(results, translations_csv)
-                    if save_mem_enabled:
-                        sm = save_memory(work_memory, br, target_lang, source, provider_name)
-                        save_memory(global_memory_path(), br, target_lang, source, provider_name)
-                        if sm:
-                            self._log(f"Saved {sm} translations to memory")
-                    self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
-                    self.signals.progress.emit(min(translated_count, len(entries)), len(entries))
-        finally:
-            executor.shutdown(wait=False)
-
-        if failed_batches and not self.stop_requested.is_set():
-            self._log(f"--- Retrying {len(failed_batches)} deferred batch(es) ---")
-            time.sleep(5)
-            for batch in failed_batches:
-                if self.stop_requested.is_set():
-                    break
-                subs = [batch] if len(batch) <= 10 else [batch[:len(batch) // 2], batch[len(batch) // 2:]]
-                for sub in subs:
-                    try:
-                        sr = run_batch(sub)
-                        with results_lock:
-                            expanded = fanout(sr)
-                            results.extend(expanded)
-                            results = self._dedupe_results(results, wanted_ids)
-                            save_results(results, translations_csv)
-                            if save_mem_enabled:
-                                save_memory(work_memory, sr, target_lang, source, provider_name)
-                                save_memory(global_memory_path(), sr, target_lang, source, provider_name)
-                            self._log(f"Recovered {len(expanded)} entries")
-                    except Exception as exc:
-                        self._log(f"Deferred still failed (keeping source): {exc}")
-                        with results_lock:
-                            for ue in sub:
-                                for e in groups.get(ue.source, [ue]):
-                                    results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
-                            results = self._dedupe_results(results, wanted_ids)
-                            save_results(results, translations_csv)
-
-        translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
-        fallback = len(entries) - translated
-        self._log(f"--- Translation report: {translated}/{len(entries)} translated, {fallback} fallback, {reused} from memory ---")
+        options = TranslateOptions(
+            target_lang=self.target_lang_edit.text(),
+            source_lang=None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text(),
+            provider=self.provider_combo.currentText(),
+            model=self.model_edit.text(),
+            api_key=self.api_key_edit.text().strip() or None,
+            api_base=self.api_base_edit.text().strip() or None,
+            batch_size=int(self.batch_size_spin.value()),
+            workers=max(1, min(8, int(self.workers_spin.value()))),
+            use_memory=self.reuse_memory_check.isChecked(),
+            save_memory=self.save_memory_check.isChecked(),
+            glossary_path=Path(gp) if gp else None,
+            restart=self.restart_check.isChecked(),
+            on_log=self._log,
+            stop_event=self.stop_requested,
+        )
+        results, report = run_translate(
+            entries,
+            translations_csv,
+            options,
+            on_progress=lambda done, total: self.signals.progress.emit(min(done, total), total),
+        )
+        self._log(
+            f"--- Translation report: {report.translated}/{len(entries)} translated, "
+            f"{report.fallback} fallback, {report.reused_memory} from memory ---"
+        )
         return results
 
     # ------------------------------------------------------------------
@@ -1096,8 +952,12 @@ class TranslatorGUI(QMainWindow):
                 self.signals.set_text.emit("game_type", "unity-xunity")
             write_analysis_report(report, game_dir / "translator_work" / "analysis.json")
             summary = f"Engine: {report['engine']} | JSON files: {report['json_files']} | Text entries: {report['text_entries']} | Data folder: {report['data_dir']}"
+            if report.get("unsupported_reason"):
+                summary += f" | NOT SUPPORTED: {report['unsupported_reason']}"
             self.signals.set_text.emit("scan_summary", summary)
             self._log(summary)
+            for warning in report.get("extract_warnings", []):
+                self._log(f"WARN: {warning}")
             self.signals.refresh_backups.emit()
             self.signals.refresh_cheat.emit()
         self._run("scan game", job)
@@ -1120,6 +980,8 @@ class TranslatorGUI(QMainWindow):
                 in_place=False,
                 restart=self.restart_check.isChecked(),
                 use_memory=self.reuse_memory_check.isChecked(),
+                glossary_path=Path(self.glossary_path_edit.text()) if self.glossary_path_edit.text().strip() else None,
+                workers=max(1, min(8, int(self.workers_spin.value()))),
                 progress=lambda m: (self._check_stopped(), self._log(m))[1],
             )
             self.signals.set_text.emit("out_dir", str(out))

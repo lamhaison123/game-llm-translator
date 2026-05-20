@@ -14,6 +14,7 @@ class Settings:
 
 def load_settings(provider: str | None = None, model: str | None = None, batch_size: int = 30) -> Settings:
     load_dotenv()
+    # Default anthropic for `translate`; CLI `auto` passes --provider google explicitly.
     selected_provider = (provider or os.getenv("LLM_PROVIDER") or "anthropic").lower()
     model_defaults = {
         "anthropic": "claude-opus-4-7",

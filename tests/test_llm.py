@@ -52,8 +52,9 @@ def test_lang_code_none_returns_default():
     assert _lang_code(None, default="vi") == "vi"
 
 
-def test_lang_code_unknown_truncates_to_two():
-    assert _lang_code("unknown_lang") == "un"
+def test_lang_code_unknown_raises():
+    with pytest.raises(ValueError, match="Unsupported language"):
+        _lang_code("unknown_lang")
 
 
 def test_lang_code_empty_string_returns_default():
@@ -124,19 +125,20 @@ def test_restore_case_insensitive_token():
 
 def test_parse_translation_json_basic():
     data = [{"key": "a", "target": "b"}]
-    result = _parse_translation_json(json.dumps(data))
+    result, stats = _parse_translation_json(json.dumps(data))
     assert result == data
+    assert stats.parsed == 1
 
 
 def test_parse_translation_json_strips_code_fence():
     raw = "```json\n[{\"key\": \"a\", \"target\": \"b\"}]\n```"
-    result = _parse_translation_json(raw)
+    result, _ = _parse_translation_json(raw)
     assert result[0]["target"] == "b"
 
 
 def test_parse_translation_json_strips_plain_fence():
     raw = "```\n[{\"key\": \"a\", \"target\": \"b\"}]\n```"
-    result = _parse_translation_json(raw)
+    result, _ = _parse_translation_json(raw)
     assert result[0]["target"] == "b"
 
 
@@ -147,9 +149,10 @@ def test_parse_translation_json_filters_incomplete():
         {"target": "d"},       # missing "key"
         "not a dict",
     ]
-    result = _parse_translation_json(json.dumps(data))
+    result, stats = _parse_translation_json(json.dumps(data))
     assert len(result) == 1
     assert result[0]["key"] == "a"
+    assert stats.skipped == 3
 
 
 def test_parse_translation_json_not_array_raises():
@@ -227,8 +230,9 @@ def test_parse_google_translate_response_empty_or_malformed_returns_empty():
 
 
 def test_parse_translation_json_empty_array():
-    result = _parse_translation_json("[]")
+    result, stats = _parse_translation_json("[]")
     assert result == []
+    assert stats.parsed == 0
 
 
 def test_user_prompt_includes_file_key_id():
@@ -251,13 +255,25 @@ def test_results_from_json_uses_id_for_duplicate_keys():
         {"id": "Items.json\x1f$[1].name", "key": "$[1].name", "target": "Thuốc"},
     ])
 
-    results = _results_from_json(entries, response)
+    results, _ = _results_from_json(entries, response)
 
     assert [result.target for result in results] == ["Ha-rôn", "Thuốc"]
 
 
-def test_results_from_json_keeps_key_fallback_for_older_responses():
+def test_results_from_json_keeps_key_fallback_for_single_file():
     entry = TextEntry(Path("Actors.json"), "$[1].name", "Harold")
     response = json.dumps([{"key": "$[1].name", "target": "Ha-rôn"}])
 
-    assert _results_from_json([entry], response)[0].target == "Ha-rôn"
+    results, _ = _results_from_json([entry], response)
+    assert results[0].target == "Ha-rôn"
+
+
+def test_results_from_json_no_key_fallback_across_files():
+    entries = [
+        TextEntry(Path("Actors.json"), "$[1].name", "Harold"),
+        TextEntry(Path("Items.json"), "$[1].name", "Potion"),
+    ]
+    response = json.dumps([{"key": "$[1].name", "target": "Wrong"}])
+    results, _ = _results_from_json(entries, response)
+    assert results[0].target == "Harold"
+    assert results[1].target == "Potion"

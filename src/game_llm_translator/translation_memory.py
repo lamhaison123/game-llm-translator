@@ -18,6 +18,26 @@ def global_memory_path() -> Path:
     return app_data_dir() / "translation_memory.csv"
 
 
+def memory_lookup_key(source: str, context: str, target_lang: str, source_lang: str | None) -> str:
+    return f"{target_lang.strip().lower()}\x1f{(source_lang or 'auto').strip().lower()}\x1f{context}\x1f{source}"
+
+
+def lookup_memory_value(
+    memory: dict[str, str],
+    source: str,
+    context: str,
+    target_lang: str,
+    source_lang: str | None,
+) -> str | None:
+    key = memory_lookup_key(source, context, target_lang, source_lang)
+    if key in memory:
+        return memory[key]
+    legacy = memory_lookup_key(source, "", target_lang, source_lang)
+    if legacy in memory:
+        return memory[legacy]
+    return memory.get(source)
+
+
 def load_memory(paths: list[Path], target_lang: str, source_lang: str | None = None) -> dict[str, str]:
     memory: dict[str, str] = {}
     wanted_target = target_lang.strip().lower()
@@ -31,13 +51,17 @@ def load_memory(paths: list[Path], target_lang: str, source_lang: str | None = N
                 target = row.get("target", "")
                 row_target = row.get("target_lang", "").strip().lower()
                 row_source = row.get("source_lang", "auto").strip().lower()
+                context = row.get("context", "")
                 if not source.strip() or not target.strip():
                     continue
                 if row_target and row_target != wanted_target:
                     continue
                 if row_source not in {"", "auto", wanted_source}:
                     continue
-                memory[source] = target
+                key = memory_lookup_key(source, context, target_lang, source_lang)
+                memory[key] = target
+                if not context.strip():
+                    memory[source] = target
     return memory
 
 
@@ -45,20 +69,21 @@ def save_memory(path: Path, results: list[TranslationResult], target_lang: str, 
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(path) + ".lock", timeout=30)
     with lock:
-        rows: dict[tuple[str, str], dict[str, str]] = {}
+        rows: dict[tuple[str, str, str], dict[str, str]] = {}
         if path.exists():
             with path.open("r", newline="", encoding="utf-8-sig") as fp:
                 for row in csv.DictReader(fp):
                     source = row.get("source", "")
                     row_target = row.get("target_lang", "")
+                    context = row.get("context", "")
                     if source and row_target:
-                        rows[(source, row_target.strip().lower())] = {name: row.get(name, "") for name in MEMORY_FIELDS}
+                        rows[(source, context, row_target.strip().lower())] = {name: row.get(name, "") for name in MEMORY_FIELDS}
         updated_at = datetime.now(timezone.utc).isoformat()
         saved = 0
         for result in results:
             if not result.source.strip() or not result.target.strip() or result.target == result.source:
                 continue
-            key = (result.source, target_lang.strip().lower())
+            key = (result.source, result.context, target_lang.strip().lower())
             rows[key] = {
                 "source": result.source,
                 "target": result.target,

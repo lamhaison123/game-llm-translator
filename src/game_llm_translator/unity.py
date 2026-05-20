@@ -7,6 +7,12 @@ from pathlib import Path
 from .models import TextEntry, TranslationResult
 
 UNITY_TEXT_EXTS = {".csv", ".tsv", ".json", ".txt"}
+UNITY_SKIP_DIRS = {"Library", "Temp", "Logs", "obj", "bin", "Packages", "ProjectSettings", "UserSettings", "node_modules"}
+UNITY_SKIP_SUFFIXES = {".meta", ".asmdef", ".cs", ".dll", ".png", ".jpg", ".asset"}
+
+
+def _looks_like_path_string(value: str) -> bool:
+    return "/" in value or "\\" in value
 
 
 def extract_unity(game_dir: Path) -> list[TextEntry]:
@@ -14,7 +20,9 @@ def extract_unity(game_dir: Path) -> list[TextEntry]:
     for file in game_dir.rglob("*"):
         if file.suffix.lower() not in UNITY_TEXT_EXTS:
             continue
-        if any(part in {"Library", "Temp", "Logs", "obj", "bin"} for part in file.parts):
+        if file.suffix.lower() in UNITY_SKIP_SUFFIXES:
+            continue
+        if any(part in UNITY_SKIP_DIRS for part in file.parts):
             continue
         try:
             text = file.read_text(encoding="utf-8-sig")
@@ -45,8 +53,9 @@ def _walk_json(value, file: Path, prefix: str = "$") -> list[TextEntry]:
     if isinstance(value, dict):
         for key, child in value.items():
             child_key = f"{prefix}.{key}"
-            if isinstance(child, str) and child.strip():
-                entries.append(TextEntry(file, child_key, child, "unity_json"))
+            if isinstance(child, str) and child.strip() and len(child.strip()) > 1:
+                if not _looks_like_path_string(child):
+                    entries.append(TextEntry(file, child_key, child, "unity_json"))
             else:
                 entries.extend(_walk_json(child, file, child_key))
     elif isinstance(value, list):

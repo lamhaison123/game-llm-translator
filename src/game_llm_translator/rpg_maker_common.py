@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .app_logging import log_event
 from .models import TextEntry, TranslationResult
 
 RPG_MAKER_TEXT_KEYS = {"name", "nickname", "profile", "description", "message", "displayName"}
@@ -251,17 +252,31 @@ def _data_dir(game_dir: Path) -> Path:
     return game_dir / "data"
 
 
-def extract_rpg_maker_json(game_dir: Path, plugin_text_extractor=None) -> list[TextEntry]:
+def extract_rpg_maker_json(game_dir: Path, plugin_text_extractor=None) -> tuple[list[TextEntry], list[str]]:
     data_dir = _data_dir(game_dir)
     entries: list[TextEntry] = []
+    warnings: list[str] = []
     for file in data_dir.glob("*.json"):
         if any(part in RPG_MAKER_SKIP_DIRS for part in file.relative_to(data_dir).parts[:-1]):
             continue
         try:
             data = json.loads(file.read_text(encoding="utf-8-sig"))
-        except Exception:
+        except json.JSONDecodeError as exc:
+            msg = f"SKIP {file.name}: invalid JSON ({exc})"
+            warnings.append(msg)
+            log_event(msg, level="WARN")
+            continue
+        except OSError as exc:
+            msg = f"SKIP {file.name}: read error ({exc})"
+            warnings.append(msg)
+            log_event(msg, level="WARN")
             continue
         entries.extend(_walk_json(data, file, plugin_text_extractor=plugin_text_extractor))
+    return entries, warnings
+
+
+def extract_rpg_maker_json_entries(game_dir: Path, plugin_text_extractor=None) -> list[TextEntry]:
+    entries, _warnings = extract_rpg_maker_json(game_dir, plugin_text_extractor)
     return entries
 
 
