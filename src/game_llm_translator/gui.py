@@ -601,6 +601,18 @@ class TranslatorGUI(tk.Tk):
             results = self._dedupe_results(results, wanted_ids)
             save_results(results, translations_csv)
             self._log(f"Reused {reused} translations from memory")
+
+        # Pre-dedup: group remaining entries by source. Translate each unique source once,
+        # then fan-out result to all entries sharing that source.
+        source_groups: dict[str, list[TextEntry]] = {}
+        for entry in to_translate:
+            source_groups.setdefault(entry.source, []).append(entry)
+        unique_to_translate = [group[0] for group in source_groups.values()]
+        duplicate_count = len(to_translate) - len(unique_to_translate)
+        if duplicate_count:
+            self._log(f"Pre-dedup: {len(to_translate)} entries -> {len(unique_to_translate)} unique sources ({duplicate_count} duplicates will be fanned out)")
+        to_translate = unique_to_translate
+
         raw_size = int(self.batch_size.get())
         size = self._estimate_batch_size(to_translate) if raw_size == 0 else raw_size
         if raw_size == 0:
@@ -663,6 +675,17 @@ class TranslatorGUI(tk.Tk):
             executor.submit(run_batch, batch): batch for batch in batches
         }
         failed_batches: list[list[TextEntry]] = []
+
+        def _fanout_results(batch_results: list[TranslationResult]) -> list[TranslationResult]:
+            """Expand 1 result-per-unique-source to N results for all entries sharing that source."""
+            expanded: list[TranslationResult] = []
+            for r in batch_results:
+                siblings = source_groups.get(r.source, [])
+                for e in siblings:
+                    expanded.append(TranslationResult(e.file, e.key, e.source, r.target, e.context))
+                if not siblings:
+                    expanded.append(r)
+            return expanded
         try:
             for future in concurrent.futures.as_completed(futures):
                 if self.stop_requested.is_set():
@@ -684,7 +707,8 @@ class TranslatorGUI(tk.Tk):
                     continue
                 with results_lock:
                     translated_count += len(batch)
-                    results.extend(batch_results)
+                    expanded = _fanout_results(batch_results)
+                    results.extend(expanded)
                     results = self._dedupe_results(results, wanted_ids)
                     save_results(results, translations_csv)
                     if save_memory_enabled:
@@ -715,20 +739,25 @@ class TranslatorGUI(tk.Tk):
                     try:
                         sub_results = run_batch(sub)
                         with results_lock:
-                            results.extend(sub_results)
+                            expanded = _fanout_results(sub_results)
+                            results.extend(expanded)
                             results = self._dedupe_results(results, wanted_ids)
                             save_results(results, translations_csv)
                             if save_memory_enabled:
                                 save_memory(work_memory, sub_results, target_lang, source, provider_name)
                                 save_memory(global_memory_path(), sub_results, target_lang, source, provider_name)
-                            self._log(f"Recovered {len(sub_results)} entries from deferred batch")
+                            self._log(f"Recovered {len(expanded)} entries from deferred batch")
                     except Exception as exc:
                         self._log(f"Deferred batch still failed (keeping source): {exc}")
                         still_failed.append(sub)
             # Fallback to source for batches that still failed
             for batch in still_failed:
                 with results_lock:
-                    fallback_results = [TranslationResult(e.file, e.key, e.source, e.source, e.context) for e in batch]
+                    fallback_results: list[TranslationResult] = []
+                    for unique_entry in batch:
+                        siblings = source_groups.get(unique_entry.source, [unique_entry])
+                        for e in siblings:
+                            fallback_results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
                     results.extend(fallback_results)
                     results = self._dedupe_results(results, wanted_ids)
                     save_results(results, translations_csv)
