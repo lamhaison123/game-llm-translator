@@ -1,5 +1,6 @@
 .env
 .venv/
+.venv-linux/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -9,7 +10,9 @@ __pycache__/
 .coverage
 htmlcov/
 build/
+build-linux/
 dist/
+dist-linux/
 *.spec
 *.egg-info/
 work/
