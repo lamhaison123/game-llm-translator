@@ -1,28 +1,30 @@
 # Game LLM Translator
 
-Tool dịch text game RPG Maker MV/MZ và Unity (XUnity AutoTranslator) bằng LLM hoặc MTL, có GUI desktop với progress bar, dark mode, glossary, parallel workers và retry tự động.
+[Tiếng Việt](README.vi.md)
 
-## Tính năng chính
+Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs or MTL providers. Includes a desktop GUI with progress tracking, dark mode, glossary support, parallel workers, and automatic retry.
 
-- **RPG Maker MV/MZ**: extract `www/data/*.json` (hoặc `data/*.json`), dịch, apply giữ nguyên cấu trúc nested folders
-- **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` (format `original=translation`); preserve regex rules/scoping directives trong file xử lý, skip resizer files
-- **Parallel translate**: GUI pipeline hỗ trợ 1-8 workers, batch size auto hoặc tự chỉnh; CLI translate tuần tự
-- **Pre-dedup theo source**: GUI pipeline gom entries trùng text để gọi LLM 1 lần rồi fan-out cho các entries còn lại (giảm 10-30% API calls)
-- **Retry thông minh**: GUI pipeline đọc `retry_after` từ Cloudflare 524, defer batch failed → retry cuối job với delay dài hơn, fallback source nếu vẫn fail
-- **Translation memory**: per-game + global, file-locked để tránh corrupt khi parallel write
-- **Atomic CSV writes**: tmp file + `os.replace`, an toàn khi crash giữa lúc save
-- **Glossary CSV**: GUI translation hỗ trợ term/translation cố định, inject vào system prompt mỗi batch
+## Key features
+
+- **RPG Maker MV/MZ**: extract `www/data/*.json` or `data/*.json`, translate, and apply while preserving nested folder structure
+- **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` files (`original=translation` format); preserve regex rules/scoping directives in processed files, skip resizer files
+- **Parallel translation**: GUI pipeline supports 1-8 workers, automatic or manual batch size; CLI translation is sequential
+- **Source pre-deduplication**: GUI pipeline groups duplicate source entries, calls the LLM once, then fans out results to matching entries (reduces API calls by 10-30%)
+- **Smart retry**: GUI pipeline reads `retry_after` from Cloudflare 524 errors, defers failed batches, retries them at the end with longer delays, and falls back to source text if still failing
+- **Translation memory**: per-game and global memory, file-locked to avoid corruption during parallel writes
+- **Atomic CSV writes**: temporary file + `os.replace`, safe against crashes during save
+- **Glossary CSV**: GUI translation can enforce fixed term translations by injecting glossary entries into each batch system prompt
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
-- **Cheat plugin**: cài/gỡ RPG Maker MV/MZ Cheat UI Plugin (ưu tiên cache/optional bundled archive, fallback GitHub release)
-- **GUI desktop** (PySide6 / Qt6):
-  - Light/Dark mode toggle (custom Qt palette)
-  - QTabWidget — instant tab switch, không flicker
-  - Progress bar với translated/total count
-  - Editor với filter (All / Untranslated+Fallback / Translated) + search, fallback rows highlight đỏ
-  - Backup tab: tạo/restore/xóa multi-select; clear game/global memory; clear old translation
-  - Stop button cancel giữa batch/retry delay, không ghi tiếp khi user dừng
+- **Cheat plugin**: install/uninstall RPG Maker MV/MZ Cheat UI Plugin (prefers optional bundled archive/cache, falls back to GitHub release)
+- **Desktop GUI** (PySide6 / Qt6):
+  - Light/dark mode toggle (custom Qt palette)
+  - QTabWidget — instant tab switching with no flicker
+  - Progress bar with translated/total count
+  - Editor with filters (All / Untranslated+Fallback / Translated), search, and red fallback-row highlights
+  - Backups tab: create/restore/delete multiple backups; clear game/global memory; clear old translations
+  - Stop button cancels between batches/retry delays and prevents further writes after stop
 
-## Cài đặt
+## Installation
 
 ```bash
 git clone https://github.com/lamhaison123/game-llm-translator
@@ -32,10 +34,10 @@ python -m venv .venv
 # Windows cmd:        .venv\Scripts\activate.bat
 # Linux/macOS:        source .venv/bin/activate
 pip install -e .
-cp .env.example .env       # tuỳ chọn
+cp .env.example .env       # optional
 ```
 
-`.env` (tuỳ chọn — cũng có thể nhập trong GUI):
+`.env` (optional — you can also enter these in the GUI):
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
@@ -44,31 +46,31 @@ LLM_PROVIDER=anthropic
 LLM_MODEL=claude-opus-4-7
 ```
 
-## GUI (khuyến nghị)
+## GUI (recommended)
 
 ```bash
 game-translator-gui
 ```
 
-Hoặc tải Windows exe có sẵn từ [Releases](https://github.com/lamhaison123/game-llm-translator/releases).
+Or download the prebuilt Windows executable from [Releases](https://github.com/lamhaison123/game-llm-translator/releases).
 
-Workflow GUI:
-1. Tab **Game**: chọn thư mục game → Scan
-2. Tab **Provider**: chọn provider, model, API key/base URL
-3. Tab **Translate**: Auto-translate hoặc Extract+Translate+Export; tinh chỉnh batch size, workers, glossary, memory
-4. Tab **Review**: edit translations.csv với filter/search
-5. Tab **Apply**: export sang folder mới hoặc apply trực tiếp vào game (kèm backup tự động; RPG Maker JSON và Unity XUnity TXT)
-6. Tab **Backups**: quản lý backup, xoá memory
+GUI workflow:
+1. **Game** tab: choose game folder → Scan
+2. **Provider** tab: choose provider, model, API key/base URL
+3. **Translate** tab: Auto-translate or Extract+Translate+Export; tune batch size, workers, glossary, memory
+4. **Review** tab: edit `translations.csv` with filter/search
+5. **Apply** tab: export to a new folder or apply directly to the game (automatic backup; RPG Maker JSON and Unity XUnity TXT)
+6. **Backups** tab: manage backups and clear memory
 
-## Dịch tự động bằng CLI
+## Automatic CLI translation
 
 ```bash
 game-translator auto "D:/Games/MyRPG" --provider anthropic --target Vietnamese
 ```
 
-Detect engine, extract, dịch, tạo `translator_work/translated_data` giữ nguyên cấu trúc folders.
+Detect engine, extract text, translate, and create `translator_work/translated_data` while preserving folder structure.
 
-Tham số phổ biến:
+Common options:
 
 ```bash
 game-translator auto "D:/Games/MyRPG" \
@@ -76,37 +78,37 @@ game-translator auto "D:/Games/MyRPG" \
   --model deepseek-r1 \
   --api-base https://your-proxy/v1 \
   --target Vietnamese \
-  --in-place           # ghi trực tiếp vào game (auto backup trước)
-  --restart            # bỏ qua bản dịch cũ, dịch lại từ đầu
+  --in-place           # write directly into the game after auto backup
+  --restart            # ignore existing translations and translate from scratch
 ```
 
-Scan trước khi dịch để xem có bao nhiêu text:
+Scan before translating to see how much text will be processed:
 
 ```bash
 game-translator scan "D:/Games/MyRPG"
 ```
 
-## CLI workflow chi tiết
+## Detailed CLI workflow
 
 ```bash
 # 1. Extract RPG Maker MV/MZ
 game-translator extract rpg-maker "D:/Games/MyRPG" -o work/texts.csv
 
-# 2. Dịch
+# 2. Translate
 game-translator translate work/texts.csv -o work/translations.csv --target Vietnamese
 
 # 3. Apply RPG Maker
 game-translator apply rpg-maker work/translations.csv --out-dir work/translated_data
 
-# Hoặc full pipeline RPG Maker
+# Or run the full RPG Maker pipeline
 game-translator pipeline rpg-maker "D:/Games/MyRPG" --work-dir work --target Vietnamese
 ```
 
-Với Unity XUnity, dùng `game-translator auto` hoặc GUI để extract/apply trực tiếp `Translation/{Lang}/Text/*.txt`. Lệnh `extract unity` legacy chỉ quét CSV/TSV/JSON/TXT để export CSV thủ công.
+For Unity XUnity, use `game-translator auto` or the GUI to extract/apply `Translation/{Lang}/Text/*.txt` directly. The legacy `extract unity` command only scans CSV/TSV/JSON/TXT candidates for manual CSV export.
 
 ## Glossary
 
-Tạo file CSV `glossary.csv`:
+Create a CSV file named `glossary.csv`:
 
 ```csv
 term,translation,note
@@ -115,10 +117,10 @@ term,translation,note
 HP,HP,keep as-is
 ```
 
-Trong GUI: tab Translate → Advanced → Glossary CSV → Browse.
-CLI hiện chưa có option glossary riêng; dùng GUI nếu cần glossary.
+In the GUI: Translate tab → Advanced → Glossary CSV → Browse.
+CLI currently has no dedicated glossary option; use the GUI if you need glossary support.
 
-Mỗi batch sẽ inject glossary vào system prompt; LLM bắt buộc dịch đúng term.
+Each batch injects the glossary into the system prompt so the LLM must follow the fixed term translations.
 
 ## Provider examples
 
@@ -135,41 +137,41 @@ game-translator translate work/texts.csv \
   --model deepseek-r1 \
   --api-base https://openrouter.ai/api/v1
 
-# MTL (free, không cần API key)
+# MTL (free, no API key required)
 game-translator translate work/texts.csv --provider google
 game-translator translate work/texts.csv --provider mymemory
 ```
 
-`bing` cần `MICROSOFT_TRANSLATOR_KEY`; `yandex` cần `YANDEX_TRANSLATE_API_KEY` + `YANDEX_FOLDER_ID`; `libretranslate` có thể trỏ về server riêng qua `LIBRETRANSLATE_URL`.
+`bing` requires `MICROSOFT_TRANSLATOR_KEY`; `yandex` requires `YANDEX_TRANSLATE_API_KEY` + `YANDEX_FOLDER_ID`; `libretranslate` can point to a self-hosted server via `LIBRETRANSLATE_URL`.
 
 ## Cheat plugin (RPG Maker MV/MZ)
 
-Trong GUI tab Apply → Cheat plugin → Apply Cheat. Tool ưu tiên archive bundled nếu bản build có kèm `vendor/cheat/`, sau đó dùng cache local, cuối cùng mới tải GitHub release. Khi cài, tool copy script vào `www/js/plugins/`, đăng ký vào `plugins.js`, lưu manifest để gỡ sạch sau này.
+In the GUI Apply tab → Cheat plugin → Apply Cheat. The tool prefers a bundled archive if the build includes `vendor/cheat/`, then local cache, then GitHub release. When installing, it copies the script to `www/js/plugins/`, registers it in `plugins.js`, and saves a manifest so uninstall can clean up later.
 
-Toggle trong game: **Ctrl+C**.
+In-game toggle: **Ctrl+C**.
 
 ## Unity (XUnity AutoTranslator)
 
-Tool dịch các file `Translation/{Lang}/Text/*.txt` mà XUAT generate. Workflow:
+The tool translates `Translation/{Lang}/Text/*.txt` files generated by XUAT. Workflow:
 
-1. **Cài XUnity AutoTranslator** vào game (qua BepInEx hoặc MelonLoader). Xem [docs upstream](https://github.com/bbepis/XUnity.AutoTranslator).
-2. **Chạy game 1 lần** để XUAT thu thập text → tạo `Translation/{Lang}/Text/_AutoGeneratedTranslations.txt`.
-3. **Mở GUI** → chọn folder game → Scan. Tool tự detect `unity-xunity` engine.
-4. **Auto-translate** hoặc **Extract+Translate+Export Copy**.
-5. Output ở `translator_work/translated_data/{Lang}/Text/*.txt`. Copy vào `Translation/{Lang}/Text/` của game, hoặc dùng "Apply to game" trong GUI để backup rồi copy file TXT vào `Translation/`.
-6. **Reload trong game**: nhấn `Alt+R` để XUAT load lại.
+1. **Install XUnity AutoTranslator** into the game (via BepInEx or MelonLoader). See [upstream docs](https://github.com/bbepis/XUnity.AutoTranslator).
+2. **Run the game once** so XUAT collects text and creates `Translation/{Lang}/Text/_AutoGeneratedTranslations.txt`.
+3. **Open the GUI** → choose game folder → Scan. The tool auto-detects the `unity-xunity` engine.
+4. **Auto-translate** or **Extract+Translate+Export Copy**.
+5. Output is written to `translator_work/translated_data/{Lang}/Text/*.txt`. Copy it into the game's `Translation/{Lang}/Text/`, or use "Apply to game" in the GUI to backup and copy TXT files into `Translation/`.
+6. **Reload in game**: press `Alt+R` so XUAT reloads translations.
 
 CLI:
 ```bash
 game-translator auto "C:/Games/UnityGame" --target Vietnamese
 ```
 
-Format file:
-- `original=translation` (mỗi entry 1 dòng)
-- Tool **bảo toàn** `#directives`, `r:"regex"=replacement`, `sr:"splitter"=...` trong các file được xử lý; `*resizer.txt` bị skip
-- Chỉ dịch dòng `original=translation` thông thường
+File format:
+- `original=translation` (one entry per line)
+- The tool **preserves** `#directives`, `r:"regex"=replacement`, and `sr:"splitter"=...` in processed files; `*resizer.txt` is skipped
+- Only normal `original=translation` lines are translated
 
-## Format CSV
+## CSV format
 
 `texts.csv`:
 
@@ -186,31 +188,31 @@ file,key,source,target,context
 /path/Actors.json,$[1].name,Harold,Ha-rôn,rpg_maker_json
 ```
 
-`(file, key)` là identity duy nhất — entries cùng `key` ở khác file không bị nhầm lẫn.
+`(file, key)` is the unique identity. Entries with the same `key` in different files are not mixed up.
 
-## Resume & checkpoint
+## Resume & checkpoints
 
-Translate lưu sau mỗi batch nên có thể dừng/khởi động lại bất cứ lúc nào. Lần sau:
-- entries đã có target sẽ không dịch lại
-- entries có cùng `source` trong memory → reuse ngay không gọi LLM
-- `--restart` để bỏ qua tất cả và dịch lại từ đầu
+Translation saves after each batch, so you can stop and restart at any time. On the next run:
+- entries that already have a target are skipped
+- entries with the same `source` in memory are reused immediately without calling the LLM
+- use `--restart` to ignore everything and translate from scratch
 
-## An toàn
+## Safety
 
-- GUI tự backup game trước khi apply (`data_backup_<timestamp>`)
-- Restore tự tạo `data_before_restore_<timestamp>` trước khi ghi đè
-- Tool ghi vào folder riêng (`translator_work/translated_data`); chỉ in-place khi user yêu cầu
-- Atomic CSV writes + filelock cho memory tránh corrupt khi parallel/crash
-- Không commit `.env` hoặc API keys
+- GUI automatically backs up the game before apply (`data_backup_<timestamp>`)
+- Restore creates `data_before_restore_<timestamp>` before overwriting
+- The tool writes to its own folder (`translator_work/translated_data`); in-place apply only happens when explicitly requested
+- Atomic CSV writes + filelock protect memory from parallel/crash corruption
+- Do not commit `.env` or API keys
 
-## Test
+## Tests
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
 
-143 tests bao quát extract/apply RPG Maker + Unity, cheat plugin, atomic write, concurrent memory save, glossary, translate pipeline, fan-out dedup.
+143 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, translation pipeline, and fan-out dedup.
 
 ## Build executable
 
@@ -238,7 +240,7 @@ Output: `dist/game-translator-gui/game-translator-gui.exe` (~140MB one-folder mo
 
 ### Linux
 
-Yêu cầu Python 3.10+ và Qt6 runtime libs:
+Requires Python 3.10+ and Qt6 runtime libraries:
 
 ```bash
 # Ubuntu/Debian
@@ -267,14 +269,14 @@ pyinstaller --noconfirm --name game-translator-gui \
   gui_launcher.py
 ```
 
-Output: `dist/game-translator-gui/game-translator-gui` (binary). Chạy:
+Output: `dist/game-translator-gui/game-translator-gui` (binary). Run:
 
 ```bash
 chmod +x dist/game-translator-gui/game-translator-gui
 ./dist/game-translator-gui/game-translator-gui
 ```
 
-**Lưu ý**: Linux build phải làm trên máy Linux (không cross-build từ Windows). Dùng GitHub Actions hoặc Docker để CI build cả 2 platform.
+**Note**: Linux builds must be produced on Linux (no cross-build from Windows). Use GitHub Actions or Docker to build both platforms in CI.
 
 ### macOS
 
@@ -292,26 +294,26 @@ Output: `dist/game-translator-gui.app`.
 
 - `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit)
 - `gui.py`: PySide6 (Qt6) GUI — QMainWindow + QTabWidget + custom dark/light palette
-- `auto.py`: workflow auto cho RPG Maker + Unity
-- `rpg_maker_common.py` / `rpg_maker_mv.py` / `rpg_maker_mz.py`: extract + apply MV/MZ
-- `rpg_maker_cheat.py`: cài/gỡ Cheat UI Plugin
+- `auto.py`: automatic workflow for RPG Maker + Unity
+- `rpg_maker_common.py` / `rpg_maker_mv.py` / `rpg_maker_mz.py`: MV/MZ extract + apply
+- `rpg_maker_cheat.py`: install/uninstall Cheat UI Plugin
 - `xunity.py`: extract + apply Unity XUnity AutoTranslator format
 - `llm.py`: providers (Anthropic, OpenAI, MTL); language-aware system prompt; glossary injection
 - `csv_store.py`: atomic CSV save/load
 - `translation_memory.py`: filelock + atomic memory store
 - `glossary.py`: CSV glossary loader + prompt formatter
-- `editor.py`: file editor cross-platform
-- `unity.py`: extract Unity CSV/JSON candidates (legacy, CLI only — dùng `xunity.py` thay thế)
+- `editor.py`: cross-platform file editor
+- `unity.py`: extract Unity CSV/JSON candidates (legacy, CLI only — use `xunity.py` instead)
 
 ## Engine support
 
 | Engine | Detect | Extract | Apply | Note |
 |---|---|---|---|---|
-| RPG Maker MV | ✅ | ✅ | ✅ | đầy đủ |
-| RPG Maker MZ | ✅ | ✅ | ✅ | đầy đủ + plugin command 357 |
-| Unity (XUnity AutoTranslator) | ✅ | ✅ | ✅ | qua `Translation/{lang}/Text/*.txt` |
-| RPG Maker VX Ace | ✅ | ❌ | ❌ | detect only (cần parse `.rvdata2`) |
-| RPG Maker VX / XP | ✅ | ❌ | ❌ | detect only |
+| RPG Maker MV | Yes | Yes | Yes | full support |
+| RPG Maker MZ | Yes | Yes | Yes | full support + plugin command 357 |
+| Unity (XUnity AutoTranslator) | Yes | Yes | Yes | via `Translation/{lang}/Text/*.txt` |
+| RPG Maker VX Ace | Yes | No | No | detect only (`.rvdata2` parsing needed) |
+| RPG Maker VX / XP | Yes | No | No | detect only |
 
 ## License
 
