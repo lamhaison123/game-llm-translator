@@ -13,6 +13,7 @@ from .llm import make_provider
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, save_memory
 from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, is_supported_json_engine
+from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
 def _data_dir(game_dir: Path) -> Path:
@@ -21,20 +22,28 @@ def _data_dir(game_dir: Path) -> Path:
 
 def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "Vietnamese") -> dict[str, object]:
     engine = detect_rpg_maker(game_dir)
+    xunity_dir = detect_xunity(game_dir)
+    if engine is None and xunity_dir is not None:
+        engine = "unity-xunity"
     data_dir = _data_dir(game_dir)
     json_files = sorted(data_dir.glob("*.json")) if data_dir.exists() else []
-    entries = extract_rpg_maker(game_dir) if is_supported_json_engine(engine) else []
+    if engine == "unity-xunity":
+        entries = extract_xunity(game_dir)
+    elif is_supported_json_engine(engine):
+        entries = extract_rpg_maker(game_dir)
+    else:
+        entries = []
     contexts = Counter(entry.context for entry in entries)
     files = Counter(entry.file.name for entry in entries)
     return {
         "game_dir": str(game_dir),
         "engine": engine or "unknown",
-        "data_dir": str(data_dir) if data_dir.exists() else "",
+        "data_dir": str(data_dir) if data_dir.exists() else (str(xunity_dir) if xunity_dir else ""),
         "json_files": len(json_files),
         "text_entries": len(entries),
         "contexts": dict(contexts),
         "top_files": dict(files.most_common(10)),
-        "supported_auto_apply": is_supported_json_engine(engine),
+        "supported_auto_apply": is_supported_json_engine(engine) or engine == "unity-xunity",
         "recommended_command": f'game-translator auto "{game_dir}" --provider {provider} --target {target_lang}',
     }
 
@@ -80,10 +89,14 @@ def auto_translate_game(
     progress: Callable[[str], None] | None = None,
 ) -> Path:
     engine = detect_rpg_maker(game_dir)
+    xunity_dir = detect_xunity(game_dir)
+    if engine is None and xunity_dir is None:
+        raise ValueError(f"Could not detect supported RPG Maker data or XUnity Translation folder in {game_dir}")
+    is_xunity = engine is None and xunity_dir is not None
     if engine is None:
-        raise ValueError(f"Could not detect supported RPG Maker data in {game_dir}")
-    if not is_supported_json_engine(engine):
-        raise ValueError(f"Detected {engine}, but automatic apply currently supports RPG Maker MV/MZ JSON games only")
+        engine = "unity-xunity"
+    if not is_xunity and not is_supported_json_engine(engine):
+        raise ValueError(f"Detected {engine}, but automatic apply currently supports RPG Maker MV/MZ JSON or Unity XUnity AutoTranslator games only")
 
     work_dir = work_dir or (game_dir / "translator_work")
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +104,7 @@ def auto_translate_game(
     translations_csv = work_dir / "translations.csv"
     out_dir = work_dir / "translated_data"
 
-    entries = extract_rpg_maker(game_dir)
+    entries = extract_xunity(game_dir) if is_xunity else extract_rpg_maker(game_dir)
     log_event(f"Extracted {len(entries)} text entries from {game_dir}")
     if progress:
         progress(f"Extracted {len(entries)} text entries")
@@ -158,8 +171,13 @@ def auto_translate_game(
             progress(f"Translated {min(len(results), len(entries))}/{len(entries)} entries")
 
     if progress:
-        progress("Applying translated JSON files")
-    apply_rpg_maker(results, out_dir)
+        progress("Applying translated files")
+    if is_xunity:
+        apply_xunity(results, out_dir)
+        translated_glob = "*.txt"
+    else:
+        apply_rpg_maker(results, out_dir)
+        translated_glob = "*.json"
     manifest = {
         "game_dir": str(game_dir),
         "engine": engine,
@@ -168,7 +186,7 @@ def auto_translate_game(
         "texts_csv": str(texts_csv),
         "translations_csv": str(translations_csv),
         "out_dir": str(out_dir),
-        "translated_files": sorted(str(file.relative_to(out_dir).as_posix()) for file in out_dir.rglob("*.json")),
+        "translated_files": sorted(str(file.relative_to(out_dir).as_posix()) for file in out_dir.rglob(translated_glob)),
         "translated_entries": len(results),
         "resumed_entries": resumed_entries,
         "initial_pending_entries": initial_pending_entries,
@@ -177,6 +195,24 @@ def auto_translate_game(
         "in_place": in_place,
     }
     if in_place:
+        if is_xunity:
+            data_dir = xunity_dir if xunity_dir is not None else (game_dir / "Translation")
+            target_subdir = data_dir / (target_lang.lower()[:2] if target_lang else "vi") / "Text"
+            target_subdir.mkdir(parents=True, exist_ok=True)
+            if backup:
+                backup_dir = game_dir / f"translation_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+                shutil.copytree(data_dir, backup_dir)
+                manifest["backup_dir"] = str(backup_dir)
+                if progress:
+                    progress(f"Backup created -> {backup_dir}")
+            for file in out_dir.rglob("*.txt"):
+                destination = target_subdir / file.name
+                shutil.copy2(file, destination)
+            manifest["applied_dir"] = str(target_subdir)
+            if progress:
+                progress(f"Applied translated files -> {target_subdir}")
+            write_analysis_report(manifest, work_dir / "manifest.json")
+            return target_subdir
         data_dir = _data_dir(game_dir)
         if backup:
             backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"

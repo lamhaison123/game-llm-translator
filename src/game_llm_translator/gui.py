@@ -22,6 +22,7 @@ from .rpg_maker import apply_rpg_maker, engine_to_gui_game_type, extract_rpg_mak
 from .rpg_maker_cheat import apply_cheat, cheat_manifest_path, cheat_status, detect_cheat_engine, remove_cheat
 from .translation_memory import global_memory_path, load_memory, save_memory
 from .glossary import load_glossary, format_glossary_for_prompt
+from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
 class TranslatorGUI(tk.Tk):
@@ -115,7 +116,7 @@ class TranslatorGUI(tk.Tk):
         tab = ttk.Frame(notebook, padding=12)
         notebook.add(tab, text="Game")
         self._path_row(tab, 0, "Game folder", self.game_dir, self._choose_game_dir)
-        self._row(tab, 1, "Game type", ttk.Combobox(tab, textvariable=self.game_type, values=["rpg-maker-mv", "rpg-maker-mz"], state="readonly"))
+        self._row(tab, 1, "Game type", ttk.Combobox(tab, textvariable=self.game_type, values=["rpg-maker-mv", "rpg-maker-mz", "unity-xunity"], state="readonly"))
         self._readonly_row(tab, 2, "Texts CSV", self.texts_csv)
         self._readonly_row(tab, 3, "Translations CSV", self.translations_csv)
         self._readonly_row(tab, 4, "Output folder", self.out_dir)
@@ -514,7 +515,10 @@ class TranslatorGUI(tk.Tk):
 
     def _extract_entries(self):
         game_dir = self._game_dir_path()
-        if normalize_gui_game_type(self.game_type.get()) == "rpg-maker-mz":
+        game_type = self.game_type.get()
+        if game_type == "unity-xunity":
+            return extract_xunity(game_dir)
+        if normalize_gui_game_type(game_type) == "rpg-maker-mz":
             return extract_rpg_maker_mz(game_dir)
         return extract_rpg_maker_mv(game_dir)
 
@@ -538,6 +542,8 @@ class TranslatorGUI(tk.Tk):
             if report["engine"] in {"mv", "mz", "mv-mz"}:
                 selected_type = engine_to_gui_game_type(str(report["engine"]))
                 self._ui_call(lambda: self.game_type.set(selected_type))
+            elif report["engine"] == "unity-xunity":
+                self._ui_call(lambda: self.game_type.set("unity-xunity"))
             write_analysis_report(report, game_dir / "translator_work" / "analysis.json")
             summary = f"Engine: {report['engine']} | JSON files: {report['json_files']} | Text entries: {report['text_entries']} | Data folder: {report['data_dir']}"
             self._ui_call(lambda: self.scan_summary.set(summary))
@@ -793,8 +799,12 @@ class TranslatorGUI(tk.Tk):
     def _export_results(self) -> Path:
         results = load_results(Path(self.translations_csv.get()))
         out_dir = Path(self.out_dir.get())
-        apply_rpg_maker(results, out_dir)
-        self._log(f"Exported translated RPG Maker JSON -> {out_dir}")
+        if self.game_type.get() == "unity-xunity":
+            apply_xunity(results, out_dir)
+            self._log(f"Exported translated XUnity .txt files -> {out_dir}")
+        else:
+            apply_rpg_maker(results, out_dir)
+            self._log(f"Exported translated RPG Maker JSON -> {out_dir}")
         return out_dir
 
     def export_translated_data(self) -> None:
@@ -1137,8 +1147,12 @@ class TranslatorGUI(tk.Tk):
             results = self._translate_entries(entries, Path(self.translations_csv.get()))
             self._check_stopped()
             out_dir = Path(self.out_dir.get())
-            apply_rpg_maker(results, out_dir)
-            self._log(f"Extracted, translated, and exported RPG Maker copy -> {out_dir}")
+            if self.game_type.get() == "unity-xunity":
+                apply_xunity(results, out_dir)
+                self._log(f"Extracted, translated, and exported XUnity .txt files -> {out_dir}")
+            else:
+                apply_rpg_maker(results, out_dir)
+                self._log(f"Extracted, translated, and exported RPG Maker copy -> {out_dir}")
         self._run("extract translate export", job)
 
 
