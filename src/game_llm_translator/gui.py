@@ -1,380 +1,628 @@
 from __future__ import annotations
 
-from pathlib import Path
-import concurrent.futures
 import csv
-import queue
 import shutil
+import sys
 import threading
 import time
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import concurrent.futures
+from pathlib import Path
 from typing import Callable
+
+from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPalette, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QSplitter,
+    QStatusBar,
+    QStyle,
+    QTabWidget,
+    QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .app_config import load_app_config, save_app_config
 from .app_logging import log_event, logs_dir
 from .auto import analyze_game, auto_translate_game, write_analysis_report
 from .csv_store import load_entries, load_results, save_results
 from .editor import open_file_editor
+from .glossary import format_glossary_for_prompt, load_glossary
 from .llm import make_provider
 from .models import TextEntry, TranslationResult, text_identity
-from .rpg_maker import apply_rpg_maker, engine_to_gui_game_type, extract_rpg_maker_mv, extract_rpg_maker_mz, normalize_gui_game_type
-from .rpg_maker_cheat import apply_cheat, cheat_manifest_path, cheat_status, detect_cheat_engine, remove_cheat
+from .rpg_maker import (
+    apply_rpg_maker,
+    engine_to_gui_game_type,
+    extract_rpg_maker_mv,
+    extract_rpg_maker_mz,
+    normalize_gui_game_type,
+)
+from .rpg_maker_cheat import (
+    apply_cheat,
+    cheat_manifest_path,
+    cheat_status,
+    detect_cheat_engine,
+    remove_cheat,
+)
 from .translation_memory import global_memory_path, load_memory, save_memory
-from .glossary import load_glossary, format_glossary_for_prompt
 from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
-class TranslatorGUI(tk.Tk):
+class WorkerSignals(QObject):
+    log = Signal(str)
+    progress = Signal(int, int)
+    progress_text = Signal(str)
+    status = Signal(str)
+    finished = Signal()
+    error = Signal(str, str)
+    info = Signal(str, str)
+    refresh_backups = Signal()
+    refresh_cheat = Signal()
+    set_text = Signal(str, str)
+
+
+def _resource_dir(name: str) -> Path:
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / name
+    return Path(__file__).resolve().parent.parent.parent / name
+
+
+class TranslatorGUI(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Game LLM Translator")
-        self.geometry("1060x780")
-        self.minsize(980, 680)
+        self.setWindowTitle("Game LLM Translator")
+        self.resize(1060, 780)
+        self.setMinimumSize(980, 680)
         self._set_window_icon()
-        self.events: queue.Queue[str] = queue.Queue()
+
+        self.config = load_app_config()
         self.stop_requested = threading.Event()
         self.current_worker: threading.Thread | None = None
-        self.action_buttons: list[ttk.Button] = []
+        self.action_buttons: list[QPushButton] = []
         self.backup_paths: list[Path] = []
         self.translate_progress: dict[str, float | int] = {"done": 0, "total": 0, "started": 0.0}
-        self._build()
-        self.after(150, self._drain_events)
 
-    def _build(self) -> None:
-        # Apply theme BEFORE creating widgets so sv-ttk doesn't need to re-style them later.
-        self._apply_theme(load_app_config().get("theme", "light"))
-        root = ttk.Frame(self, padding=12)
-        root.pack(fill=tk.BOTH, expand=True)
+        self.signals = WorkerSignals()
+        self.signals.log.connect(self._append_log)
+        self.signals.progress.connect(self._on_progress)
+        self.signals.progress_text.connect(self._on_progress_text)
+        self.signals.status.connect(self._on_status)
+        self.signals.finished.connect(self._on_finished)
+        self.signals.error.connect(self._on_error)
+        self.signals.info.connect(self._on_info)
+        self.signals.refresh_backups.connect(self.refresh_backups)
+        self.signals.refresh_cheat.connect(self.refresh_cheat_status)
+        self.signals.set_text.connect(self._on_set_text)
 
-        config = load_app_config()
-        self.game_type = tk.StringVar(value=normalize_gui_game_type(str(config.get("game_type", "rpg-maker-mv"))))
-        self.game_dir = tk.StringVar(value=str(config.get("game_dir", "")))
-        self.texts_csv = tk.StringVar(value=str(config.get("texts_csv", "work/texts.csv")))
-        self.translations_csv = tk.StringVar(value=str(config.get("translations_csv", "work/translations.csv")))
-        self.out_dir = tk.StringVar(value=str(config.get("out_dir", "work/translated")))
-        self.provider = tk.StringVar(value=str(config.get("provider", "google")))
-        self.model = tk.StringVar(value=str(config.get("model", "claude-opus-4-7")))
-        self.api_key = tk.StringVar(value=str(config.get("api_key", "")))
-        self.api_base = tk.StringVar(value=str(config.get("api_base", "")))
-        self.source_lang = tk.StringVar(value=str(config.get("source_lang", "auto")))
-        self.target_lang = tk.StringVar(value=str(config.get("target_lang", "Vietnamese")))
-        self.batch_size = tk.IntVar(value=int(config.get("batch_size", 30)))
-        self.workers = tk.IntVar(value=int(config.get("workers", 1)))
-        self.glossary_path = tk.StringVar(value=str(config.get("glossary_path", "")))
-        self.theme_mode = tk.StringVar(value=str(config.get("theme", "light")))
-        self.restart = tk.BooleanVar(value=False)
-        self.remember_api_key = tk.BooleanVar(value=bool(config.get("remember_api_key", bool(config.get("api_key")))))
-        self.reuse_memory = tk.BooleanVar(value=bool(config.get("reuse_memory", True)))
-        self.save_memory_enabled = tk.BooleanVar(value=bool(config.get("save_memory", True)))
-        self.status_text = tk.StringVar(value="Idle")
-        self.scan_summary = tk.StringVar(value="Choose a game folder, then scan.")
-        self.provider_note = tk.StringVar(value="")
-        self.cheat_status_text = tk.StringVar(value="Cheat plugin: no game selected")
-
-        self._build_header(root)
-        self._build_tabs(root)
-        self._build_status_bar(root)
-        root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
+        self._build_ui()
+        self._apply_theme(self.config.get("theme", "light"))
         self._update_api_fields()
-        # Defer initial backups refresh until after first paint so Treeview row
-        # heights settle without forcing a visible reflow on the Backups tab.
-        self.after(0, self.refresh_backups)
+        self.refresh_backups()
+        self.refresh_cheat_status()
 
     def _set_window_icon(self) -> None:
-        import sys
-        if hasattr(sys, "_MEIPASS"):
-            asset_dir = Path(sys._MEIPASS) / "assets"
-        else:
-            asset_dir = Path(__file__).resolve().parent.parent.parent / "assets"
         try:
+            asset_dir = _resource_dir("assets")
             ico = asset_dir / "icon.ico"
             png = asset_dir / "icon.png"
             if sys.platform == "win32" and ico.exists():
-                self.iconbitmap(default=str(ico))
+                self.setWindowIcon(QIcon(str(ico)))
             elif png.exists():
-                photo = tk.PhotoImage(file=str(png))
-                self.iconphoto(True, photo)
-                self._icon_photo = photo  # keep reference
+                self.setWindowIcon(QIcon(str(png)))
         except Exception:
             pass
-
-    def _build_header(self, parent: ttk.Frame) -> None:
-        header = ttk.Frame(parent)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(header, text="Game LLM Translator", font=("Segoe UI", 16, "bold")).pack(side=tk.LEFT)
-        ttk.Label(header, textvariable=self.status_text).pack(side=tk.RIGHT)
-        ttk.Button(header, text="Toggle theme", command=self._toggle_theme).pack(side=tk.RIGHT, padx=8)
 
     def _apply_theme(self, mode: str) -> None:
-        try:
-            import sv_ttk
-            sv_ttk.set_theme(mode if mode in ("light", "dark") else "light")
-            self.theme_mode.set(mode if mode in ("light", "dark") else "light")
-        except Exception:
-            pass
+        app = QApplication.instance()
+        if app is None:
+            return
+        if mode == "dark":
+            palette = QPalette()
+            palette.setColor(QPalette.Window, QColor(45, 45, 48))
+            palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
+            palette.setColor(QPalette.Base, QColor(30, 30, 30))
+            palette.setColor(QPalette.AlternateBase, QColor(45, 45, 48))
+            palette.setColor(QPalette.Text, QColor(220, 220, 220))
+            palette.setColor(QPalette.Button, QColor(60, 60, 65))
+            palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+            palette.setColor(QPalette.Highlight, QColor(91, 108, 255))
+            palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+            palette.setColor(QPalette.ToolTipBase, QColor(45, 45, 48))
+            palette.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+            app.setPalette(palette)
+            self.theme_mode = "dark"
+        else:
+            app.setPalette(app.style().standardPalette())
+            self.theme_mode = "light"
 
     def _toggle_theme(self) -> None:
-        new_mode = "dark" if self.theme_mode.get() == "light" else "light"
+        new_mode = "dark" if self.theme_mode == "light" else "light"
         self._apply_theme(new_mode)
-        config = load_app_config()
-        config["theme"] = new_mode
-        save_app_config(config)
+        cfg = load_app_config()
+        cfg["theme"] = new_mode
+        save_app_config(cfg)
 
-    def _build_tabs(self, parent: ttk.Frame) -> None:
-        notebook = ttk.Notebook(parent)
-        notebook.grid(row=1, column=0, sticky="nsew")
-        parent.rowconfigure(1, weight=1)
-        self._build_game_tab(notebook)
-        self._build_provider_tab(notebook)
-        self._build_translate_tab(notebook)
-        self._build_review_tab(notebook)
-        self._build_apply_tab(notebook)
-        self._build_recovery_tab(notebook)
-        self._build_logs_tab(notebook)
-        self.notebook = notebook
-        # Pre-render every tab once so first switch doesn't show widgets popping in.
-        # Wait until window is mapped (visible) before pre-render — fixes timing race
-        # where after(50) fires before DWM has finished mapping the window.
-        self.bind("<Map>", self._on_map_prerender, add="+")
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
-    def _on_map_prerender(self, _event=None) -> None:
-        self.unbind("<Map>")
-        self.after(10, self._prerender_tabs)
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(12, 12, 12, 12)
 
-    def _prerender_tabs(self) -> None:
-        try:
-            tabs = self.notebook.tabs()
-            for tab_id in tabs:
-                self.notebook.select(tab_id)
-                # update() flushes expose+paint events; update_idletasks() only flushes geometry.
-                # sv-ttk's PNG bitmaps need expose events to actually composite.
-                self.update()
-            if tabs:
-                self.notebook.select(tabs[0])
-                self.update()
-        except Exception:
-            pass
+        # Header
+        header = QHBoxLayout()
+        title = QLabel("Game LLM Translator")
+        font = title.font()
+        font.setPointSize(14)
+        font.setBold(True)
+        title.setFont(font)
+        header.addWidget(title)
+        header.addStretch()
+        self.theme_button = QPushButton("Toggle theme")
+        self.theme_button.clicked.connect(self._toggle_theme)
+        header.addWidget(self.theme_button)
+        root.addLayout(header)
 
-    def _build_game_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Game")
-        self._path_row(tab, 0, "Game folder", self.game_dir, self._choose_game_dir)
-        self._row(tab, 1, "Game type", ttk.Combobox(tab, textvariable=self.game_type, values=["rpg-maker-mv", "rpg-maker-mz", "unity-xunity"], state="readonly"))
-        self._readonly_row(tab, 2, "Texts CSV", self.texts_csv)
-        self._readonly_row(tab, 3, "Translations CSV", self.translations_csv)
-        self._readonly_row(tab, 4, "Output folder", self.out_dir)
-        self._action_button(tab, "Scan Game", self.scan).grid(row=5, column=1, sticky="w", pady=10)
-        ttk.Label(tab, textvariable=self.scan_summary, wraplength=760, justify=tk.LEFT).grid(row=6, column=0, columnspan=3, sticky="ew", pady=6)
-        ttk.Label(tab, text="Tip: choose the RPG Maker MV/MZ game folder that contains Game.exe or www/data.", foreground="#555").grid(row=7, column=0, columnspan=3, sticky="w", pady=6)
-        tab.columnconfigure(1, weight=1)
+        # Tabs
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_game_tab(), "Game")
+        self.tabs.addTab(self._build_provider_tab(), "Provider")
+        self.tabs.addTab(self._build_translate_tab(), "Translate")
+        self.tabs.addTab(self._build_review_tab(), "Review")
+        self.tabs.addTab(self._build_apply_tab(), "Apply")
+        self.tabs.addTab(self._build_recovery_tab(), "Backups")
+        self.tabs.addTab(self._build_logs_tab(), "Logs")
+        root.addWidget(self.tabs, 1)
 
-    def _build_provider_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Provider")
-        provider_box = ttk.Combobox(tab, textvariable=self.provider, values=["google", "mymemory", "libretranslate", "bing", "yandex", "anthropic", "openai", "openai-compatible"], state="readonly")
-        provider_box.bind("<<ComboboxSelected>>", lambda _event: self._update_api_fields())
-        self._row(tab, 0, "Provider", provider_box)
-        self.model_entry = ttk.Entry(tab, textvariable=self.model)
-        self._row(tab, 1, "Model", self.model_entry)
-        self.api_key_label = ttk.Label(tab, text="API key")
-        self.api_key_label.grid(row=2, column=0, sticky="w", pady=3)
-        self.api_key_entry = ttk.Entry(tab, textvariable=self.api_key, show="*")
-        self.api_key_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=3)
-        self.api_base_label = ttk.Label(tab, text="API base")
-        self.api_base_label.grid(row=3, column=0, sticky="w", pady=3)
-        self.api_base_entry = ttk.Entry(tab, textvariable=self.api_base)
-        self.api_base_entry.grid(row=3, column=1, columnspan=2, sticky="ew", pady=3)
-        self._row(tab, 4, "Source language", ttk.Entry(tab, textvariable=self.source_lang))
-        self._row(tab, 5, "Target language", ttk.Entry(tab, textvariable=self.target_lang))
-        ttk.Checkbutton(tab, text="Remember API key/base on this computer (plaintext config file)", variable=self.remember_api_key).grid(row=6, column=1, columnspan=2, sticky="w", pady=8)
-        ttk.Label(tab, text="API keys are stored as plaintext only when the checkbox above is enabled.", foreground="#8a5a00", wraplength=720).grid(row=7, column=1, columnspan=2, sticky="w")
-        ttk.Label(tab, textvariable=self.provider_note, wraplength=760, justify=tk.LEFT, foreground="#555").grid(row=8, column=1, columnspan=2, sticky="ew", pady=8)
-        self._action_button(tab, "Save Settings", self.save_settings).grid(row=9, column=1, sticky="w", pady=10)
-        tab.columnconfigure(1, weight=1)
+        # Status bar
+        bar = self.statusBar()
+        self.status_label = QLabel("Idle")
+        bar.addWidget(self.status_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumWidth(260)
+        self.progress_bar.setRange(0, 0)  # indeterminate
+        self.progress_bar.setVisible(False)
+        bar.addPermanentWidget(self.progress_bar)
+        self.progress_text_label = QLabel("")
+        bar.addPermanentWidget(self.progress_text_label)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_current)
+        bar.addPermanentWidget(self.stop_button)
 
-    def _build_translate_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Translate")
-        ttk.Label(tab, text="Safe workflow: Extract text -> Start/Resume translation -> Review -> Export copy.", wraplength=760).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-        self._action_button(tab, "Extract Text", self.extract).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
-        self._action_button(tab, "Start / Resume Translation", self.translate).grid(row=1, column=1, sticky="w", padx=8, pady=4)
-        self._action_button(tab, "Extract + Translate + Export Copy", self.pipeline).grid(row=1, column=2, sticky="w", padx=8, pady=4)
-        advanced = ttk.LabelFrame(tab, text="Advanced translation options", padding=10)
-        advanced.grid(row=2, column=0, columnspan=3, sticky="ew", pady=14)
-        self._row(advanced, 0, "Batch size (0 = auto)", ttk.Spinbox(advanced, from_=0, to=200, textvariable=self.batch_size))
-        self._row(advanced, 1, "Workers (parallel batches)", ttk.Spinbox(advanced, from_=1, to=8, textvariable=self.workers))
-        ttk.Label(advanced, text="Glossary CSV (optional)").grid(row=2, column=0, sticky="w", padx=4, pady=3)
-        glossary_frame = ttk.Frame(advanced)
-        glossary_frame.grid(row=2, column=1, sticky="ew", pady=3)
-        ttk.Entry(glossary_frame, textvariable=self.glossary_path).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(glossary_frame, text="Browse", command=self._choose_glossary).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Checkbutton(advanced, text="Ignore existing translations and start over", variable=self.restart).grid(row=3, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(advanced, text="Reuse translation memory", variable=self.reuse_memory).grid(row=4, column=1, sticky="w", pady=3)
-        ttk.Checkbutton(advanced, text="Save successful translations to memory", variable=self.save_memory_enabled).grid(row=5, column=1, sticky="w", pady=3)
-        ttk.Label(advanced, text="Glossary CSV columns: term, translation, [note]. Terms here will be translated EXACTLY as listed in every batch.", foreground="#555", wraplength=720).grid(row=6, column=1, columnspan=2, sticky="w", pady=4)
-        ttk.Label(advanced, text="If old translations include asset filenames from an older parser run, use Backups > Clear Old Translation before translating again.", foreground="#555", wraplength=720).grid(row=7, column=1, columnspan=2, sticky="w", pady=4)
-        advanced.columnconfigure(1, weight=1)
-        tab.columnconfigure(2, weight=1)
+    # ----- helper widgets -----
 
-    def _build_review_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Review")
-        ttk.Label(tab, text="Review or manually edit translations before exporting/applying them.").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-        self._action_button(tab, "Review/Edit Translations", self.edit_table).grid(row=1, column=0, sticky="w", padx=(0, 8))
-        self._action_button(tab, "Open CSV Externally", self.edit_csv).grid(row=1, column=1, sticky="w", padx=8)
-        files = ttk.LabelFrame(tab, text="Advanced file locations", padding=10)
-        files.grid(row=2, column=0, columnspan=3, sticky="ew", pady=14)
-        self._path_row(files, 0, "Texts CSV", self.texts_csv, lambda: self._choose_save(self.texts_csv))
-        self._path_row(files, 1, "Translations CSV", self.translations_csv, lambda: self._choose_save(self.translations_csv))
-        self._path_row(files, 2, "Output folder", self.out_dir, lambda: self._choose_dir(self.out_dir))
-        files.columnconfigure(1, weight=1)
-        tab.columnconfigure(2, weight=1)
+    def _add_form_row(self, layout: QFormLayout, label: str, widget: QWidget) -> None:
+        layout.addRow(label, widget)
 
-    def _build_apply_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Export / Apply")
-        safe = ttk.LabelFrame(tab, text="Safe export", padding=10)
-        safe.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=4)
-        ttk.Label(safe, text="Writes translated JSON to the output folder only. Does not change the game.", wraplength=430).grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self._action_button(safe, "Export Translated Data", self.export_translated_data).grid(row=1, column=0, sticky="w")
-        risky = ttk.LabelFrame(tab, text="Apply to game folder", padding=10)
-        risky.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=4)
-        ttk.Label(risky, text="Creates a backup, then replaces JSON files in the game data folder. Close the game first.", wraplength=430, foreground="#8a0000").grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self._action_button(risky, "Apply to Game...", self.apply_to_game).grid(row=1, column=0, sticky="w")
-        cheat = ttk.LabelFrame(tab, text="Cheat plugin", padding=10)
-        cheat.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        ttk.Label(cheat, text="Installs RPG Maker MV/MZ Cheat UI Plugin from GitHub. Toggle in game: Ctrl+C. Remove uses this app's manifest only.", wraplength=900).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        ttk.Label(cheat, textvariable=self.cheat_status_text, foreground="#555", wraplength=900).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        self._action_button(cheat, "Apply Cheat...", self.apply_cheat_plugin).grid(row=2, column=0, sticky="w", padx=(0, 8))
-        self._action_button(cheat, "Remove Cheat", self.remove_cheat_plugin).grid(row=2, column=1, sticky="w", padx=8)
-        self._action_button(cheat, "Refresh Cheat Status", self.refresh_cheat_status).grid(row=2, column=2, sticky="w", padx=8)
-        tab.columnconfigure(0, weight=1)
-        tab.columnconfigure(1, weight=1)
-        tab.rowconfigure(0, weight=1)
+    def _path_picker(self, var: QLineEdit, on_browse: Callable[[], None]) -> QWidget:
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(var, 1)
+        btn = QPushButton("Browse")
+        btn.clicked.connect(on_browse)
+        h.addWidget(btn)
+        return wrap
 
-    def _build_recovery_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Backups")
+    def _action_button(self, text: str, slot: Callable[[], None]) -> QPushButton:
+        btn = QPushButton(text)
+        btn.clicked.connect(slot)
+        self.action_buttons.append(btn)
+        return btn
 
-        backup_group = ttk.LabelFrame(tab, text="Backup actions", padding=8)
-        backup_group.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self._action_button(backup_group, "Refresh", self.refresh_backups).pack(side=tk.LEFT, padx=3)
-        self._action_button(backup_group, "Create Backup", self.create_backup_now).pack(side=tk.LEFT, padx=3)
-        self._action_button(backup_group, "Open Selected", self.open_selected_backup).pack(side=tk.LEFT, padx=3)
-        self._action_button(backup_group, "Restore Selected", self.restore_backup).pack(side=tk.LEFT, padx=3)
-        self._action_button(backup_group, "Delete Selected", self.delete_selected_backups).pack(side=tk.LEFT, padx=3)
-        self._action_button(backup_group, "Delete All", self.delete_all_backups).pack(side=tk.LEFT, padx=3)
+    # ----- Game tab -----
 
-        memory_group = ttk.LabelFrame(tab, text="Memory & translation cleanup", padding=8)
-        memory_group.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        self._action_button(memory_group, "Clear Old Translation", self.clear_old_translation).pack(side=tk.LEFT, padx=3)
-        self._action_button(memory_group, "Clear Game Memory", self.clear_game_memory).pack(side=tk.LEFT, padx=3)
-        self._action_button(memory_group, "Clear Global Memory", self.clear_global_memory).pack(side=tk.LEFT, padx=3)
+    def _build_game_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        form = QFormLayout()
+        outer.addLayout(form)
 
-        columns = ("kind", "path")
-        self.backups_tree = ttk.Treeview(tab, columns=columns, show="headings", height=12, selectmode="extended")
-        self.backups_tree.heading("kind", text="Backup type")
-        self.backups_tree.heading("path", text="Path")
-        self.backups_tree.column("kind", width=150, anchor=tk.W)
-        self.backups_tree.column("path", width=760, anchor=tk.W)
-        self.backups_tree.grid(row=2, column=0, sticky="nsew")
-        ttk.Label(tab, text="Restore creates data_before_restore_* first. Delete only removes listed backup folders; game data is not changed.", foreground="#555").grid(row=3, column=0, sticky="w", pady=8)
-        tab.columnconfigure(0, weight=1)
-        tab.rowconfigure(2, weight=1)
+        self.game_dir_edit = QLineEdit(str(self.config.get("game_dir", "")))
+        form.addRow("Game folder", self._path_picker(self.game_dir_edit, self._choose_game_dir))
 
-    def _build_logs_tab(self, notebook: ttk.Notebook) -> None:
-        tab = ttk.Frame(notebook, padding=12)
-        notebook.add(tab, text="Logs")
-        buttons = ttk.Frame(tab)
-        buttons.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self._action_button(buttons, "Open Log Folder", self.open_logs).pack(side=tk.LEFT, padx=4)
-        ttk.Button(buttons, text="Clear View", command=lambda: self.log.delete("1.0", tk.END)).pack(side=tk.LEFT, padx=4)
-        self.log = tk.Text(tab, height=18, wrap=tk.WORD)
-        self.log.grid(row=1, column=0, sticky="nsew")
-        tab.columnconfigure(0, weight=1)
-        tab.rowconfigure(1, weight=1)
+        self.game_type_combo = QComboBox()
+        self.game_type_combo.addItems(["rpg-maker-mv", "rpg-maker-mz", "unity-xunity"])
+        self.game_type_combo.setCurrentText(normalize_gui_game_type(str(self.config.get("game_type", "rpg-maker-mv"))))
+        form.addRow("Game type", self.game_type_combo)
 
-    def _build_status_bar(self, parent: ttk.Frame) -> None:
-        bar = ttk.Frame(parent)
-        bar.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        ttk.Label(bar, textvariable=self.status_text).pack(side=tk.LEFT)
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=260)
-        self.progress.pack(side=tk.LEFT, padx=12)
-        self.progress_text = tk.StringVar(value="")
-        ttk.Label(bar, textvariable=self.progress_text, foreground="#555").pack(side=tk.LEFT, padx=4)
-        self.stop_button = ttk.Button(bar, text="Stop", command=self.stop_current, state="disabled")
-        self.stop_button.pack(side=tk.RIGHT)
+        self.texts_csv_edit = QLineEdit(str(self.config.get("texts_csv", "work/texts.csv")))
+        self.texts_csv_edit.setReadOnly(True)
+        form.addRow("Texts CSV", self.texts_csv_edit)
 
-    def _action_button(self, parent: tk.Widget, text: str, command: Callable[[], None]) -> ttk.Button:
-        button = ttk.Button(parent, text=text, command=command)
-        self.action_buttons.append(button)
-        return button
+        self.translations_csv_edit = QLineEdit(str(self.config.get("translations_csv", "work/translations.csv")))
+        self.translations_csv_edit.setReadOnly(True)
+        form.addRow("Translations CSV", self.translations_csv_edit)
 
-    def _provider_uses_api_key(self) -> bool:
-        return self.provider.get() in {"anthropic", "openai", "openai-compatible", "libretranslate", "bing", "yandex"}
+        self.out_dir_edit = QLineEdit(str(self.config.get("out_dir", "work/translated_data")))
+        self.out_dir_edit.setReadOnly(True)
+        form.addRow("Output folder", self.out_dir_edit)
 
-    def _provider_uses_api_base(self) -> bool:
-        return self.provider.get() in {"openai-compatible", "libretranslate"}
+        # Action row
+        action_row = QHBoxLayout()
+        action_row.addWidget(self._action_button("Scan Game", self.scan))
+        action_row.addStretch()
+        outer.addLayout(action_row)
+
+        self.scan_summary_label = QLabel("Choose a game folder, then scan.")
+        self.scan_summary_label.setWordWrap(True)
+        outer.addWidget(self.scan_summary_label)
+
+        outer.addStretch()
+        return tab
+
+    # ----- Provider tab -----
+
+    def _build_provider_tab(self) -> QWidget:
+        tab = QWidget()
+        form = QFormLayout(tab)
+
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["google", "mymemory", "libretranslate", "bing", "yandex", "anthropic", "openai", "openai-compatible"])
+        self.provider_combo.setCurrentText(str(self.config.get("provider", "google")))
+        self.provider_combo.currentTextChanged.connect(lambda _: self._update_api_fields())
+        form.addRow("Provider", self.provider_combo)
+
+        self.model_edit = QLineEdit(str(self.config.get("model", "google")))
+        form.addRow("Model", self.model_edit)
+
+        self.api_key_edit = QLineEdit(str(self.config.get("api_key", "")))
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        form.addRow("API key", self.api_key_edit)
+
+        self.api_base_edit = QLineEdit(str(self.config.get("api_base", "")))
+        form.addRow("Base URL", self.api_base_edit)
+
+        self.source_lang_edit = QLineEdit(str(self.config.get("source_lang", "auto")))
+        form.addRow("Source language", self.source_lang_edit)
+
+        self.target_lang_edit = QLineEdit(str(self.config.get("target_lang", "Vietnamese")))
+        form.addRow("Target language", self.target_lang_edit)
+
+        self.remember_api_check = QCheckBox("Remember API key/base on this machine")
+        self.remember_api_check.setChecked(bool(self.config.get("remember_api_key", bool(self.config.get("api_key")))))
+        form.addRow("", self.remember_api_check)
+
+        self.provider_note = QLabel("")
+        self.provider_note.setWordWrap(True)
+        self.provider_note.setStyleSheet("color: #666;")
+        form.addRow("", self.provider_note)
+
+        save_btn = QPushButton("Save provider settings")
+        save_btn.clicked.connect(self.save_settings)
+        form.addRow("", save_btn)
+
+        return tab
 
     def _update_api_fields(self) -> None:
-        provider = self.provider.get()
-        key_state = "normal" if self._provider_uses_api_key() else "disabled"
-        base_state = "normal" if self._provider_uses_api_base() else "disabled"
-        model_state = "normal" if provider in {"anthropic", "openai", "openai-compatible"} else "disabled"
-        self.api_key_entry.configure(state=key_state)
-        self.api_base_entry.configure(state=base_state)
-        self.model_entry.configure(state=model_state)
-        labels = {
-            "anthropic": "Anthropic API key",
-            "openai": "OpenAI API key",
-            "openai-compatible": "OpenAI-compatible API key",
-            "libretranslate": "LibreTranslate API key (optional)",
-            "bing": "Microsoft Translator key",
-            "yandex": "Yandex API key",
-        }
-        self.api_key_label.configure(text=labels.get(provider, "API key not required"))
-        self.api_base_label.configure(text="Base URL" if provider in {"openai-compatible", "libretranslate"} else "API base not used")
+        provider = self.provider_combo.currentText()
         notes = {
             "google": "No API key required. MTL output may be rough; review translations before applying.",
             "mymemory": "No API key required. Public service may rate-limit requests.",
             "libretranslate": "Set LibreTranslate URL/API key here if using a custom server; otherwise environment defaults may be used.",
             "bing": "Microsoft Translator may require key/region depending on your account setup.",
             "yandex": "Yandex may require API key and folder/project configuration.",
-            "anthropic": "Uses model/context-aware batches. Keep API keys private.",
+            "anthropic": "Uses Anthropic Claude. Keep API keys private.",
             "openai": "Uses OpenAI chat completions. Keep API keys private.",
-            "openai-compatible": "Requires a compatible base URL and model name from your provider/local server.",
+            "openai-compatible": "OpenRouter / LM Studio / Ollama / proxy. Set Base URL.",
         }
-        self.provider_note.set(notes.get(provider, ""))
+        self.provider_note.setText(notes.get(provider, ""))
 
-    def save_settings(self) -> None:
+    # ----- Translate tab -----
+
+    def _build_translate_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+
+        actions = QHBoxLayout()
+        actions.addWidget(self._action_button("Auto-translate (extract + translate + export)", self.auto_translate))
+        actions.addWidget(self._action_button("Extract + Translate + Export Copy", self.pipeline))
+        actions.addStretch()
+        outer.addLayout(actions)
+
+        advanced = QGroupBox("Advanced translation options")
+        adv = QFormLayout(advanced)
+
+        self.batch_size_spin = QSpinBox()
+        self.batch_size_spin.setRange(0, 200)
+        self.batch_size_spin.setValue(int(self.config.get("batch_size", 30)))
+        adv.addRow("Batch size (0 = auto)", self.batch_size_spin)
+
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 8)
+        self.workers_spin.setValue(int(self.config.get("workers", 1)))
+        adv.addRow("Workers (parallel)", self.workers_spin)
+
+        self.glossary_path_edit = QLineEdit(str(self.config.get("glossary_path", "")))
+        adv.addRow("Glossary CSV (optional)", self._path_picker(self.glossary_path_edit, self._choose_glossary))
+
+        self.restart_check = QCheckBox("Ignore existing translations and start over")
+        adv.addRow("", self.restart_check)
+
+        self.reuse_memory_check = QCheckBox("Reuse translation memory")
+        self.reuse_memory_check.setChecked(bool(self.config.get("reuse_memory", True)))
+        adv.addRow("", self.reuse_memory_check)
+
+        self.save_memory_check = QCheckBox("Save successful translations to memory")
+        self.save_memory_check.setChecked(bool(self.config.get("save_memory", True)))
+        adv.addRow("", self.save_memory_check)
+
+        hint = QLabel("Glossary CSV columns: term, translation, [note]. Terms here will be translated EXACTLY as listed in every batch.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #555;")
+        adv.addRow("", hint)
+
+        outer.addWidget(advanced)
+        outer.addStretch()
+        return tab
+
+    # ----- Review tab -----
+
+    def _build_review_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        info = QLabel("Edit translations.csv: filter, search, mark fallback rows. Open external editor for raw CSV.")
+        info.setWordWrap(True)
+        outer.addWidget(info)
+
+        row = QHBoxLayout()
+        row.addWidget(self._action_button("Review/Edit Translations", self.edit_table))
+        row.addWidget(self._action_button("Open CSV Externally", self.edit_csv))
+        row.addStretch()
+        outer.addLayout(row)
+        outer.addStretch()
+        return tab
+
+    # ----- Apply tab -----
+
+    def _build_apply_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+
+        export = QGroupBox("Export translated data")
+        e = QHBoxLayout(export)
+        e.addWidget(self._action_button("Export Translated Data", self.export_translated_data))
+        e.addStretch()
+        outer.addWidget(export)
+
+        risky = QGroupBox("Apply translated data to game")
+        r = QVBoxLayout(risky)
+        r_label = QLabel("Creates a backup, then replaces JSON files in the game data folder. Close the game first.")
+        r_label.setWordWrap(True)
+        r_label.setStyleSheet("color: #8a0000;")
+        r.addWidget(r_label)
+        r_row = QHBoxLayout()
+        r_row.addWidget(self._action_button("Apply to Game...", self.apply_to_game))
+        r_row.addStretch()
+        r.addLayout(r_row)
+        outer.addWidget(risky)
+
+        cheat = QGroupBox("Cheat plugin (RPG Maker MV/MZ)")
+        c = QVBoxLayout(cheat)
+        c_label = QLabel("Installs RPG Maker MV/MZ Cheat UI Plugin. Toggle in game: Ctrl+C. Remove uses this app's manifest only.")
+        c_label.setWordWrap(True)
+        c.addWidget(c_label)
+        self.cheat_status_label = QLabel("Cheat plugin: no game selected")
+        self.cheat_status_label.setWordWrap(True)
+        self.cheat_status_label.setStyleSheet("color: #555;")
+        c.addWidget(self.cheat_status_label)
+        c_row = QHBoxLayout()
+        c_row.addWidget(self._action_button("Apply Cheat...", self.apply_cheat_plugin))
+        c_row.addWidget(self._action_button("Remove Cheat", self.remove_cheat_plugin))
+        c_row.addWidget(self._action_button("Refresh Status", self.refresh_cheat_status))
+        c_row.addStretch()
+        c.addLayout(c_row)
+        outer.addWidget(cheat)
+
+        outer.addStretch()
+        return tab
+
+    # ----- Recovery / Backups tab -----
+
+    def _build_recovery_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+
+        backup_group = QGroupBox("Backup actions")
+        b = QHBoxLayout(backup_group)
+        b.addWidget(self._action_button("Refresh", self.refresh_backups))
+        b.addWidget(self._action_button("Create Backup", self.create_backup_now))
+        b.addWidget(self._action_button("Open Selected", self.open_selected_backup))
+        b.addWidget(self._action_button("Restore Selected", self.restore_backup))
+        b.addWidget(self._action_button("Delete Selected", self.delete_selected_backups))
+        b.addWidget(self._action_button("Delete All", self.delete_all_backups))
+        b.addStretch()
+        outer.addWidget(backup_group)
+
+        memory_group = QGroupBox("Memory & translation cleanup")
+        m = QHBoxLayout(memory_group)
+        m.addWidget(self._action_button("Clear Old Translation", self.clear_old_translation))
+        m.addWidget(self._action_button("Clear Game Memory", self.clear_game_memory))
+        m.addWidget(self._action_button("Clear Global Memory", self.clear_global_memory))
+        m.addStretch()
+        outer.addWidget(memory_group)
+
+        self.backups_tree = QTreeWidget()
+        self.backups_tree.setHeaderLabels(["Backup type", "Path"])
+        self.backups_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.backups_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
+        outer.addWidget(self.backups_tree, 1)
+
+        info = QLabel("Restore creates data_before_restore_* first. Delete only removes listed backup folders; game data is not changed.")
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #555;")
+        outer.addWidget(info)
+        return tab
+
+    # ----- Logs tab -----
+
+    def _build_logs_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        row = QHBoxLayout()
+        row.addWidget(self._action_button("Open Log Folder", self.open_logs))
+        clear_btn = QPushButton("Clear View")
+        clear_btn.clicked.connect(lambda: self.log_view.clear())
+        row.addWidget(clear_btn)
+        row.addStretch()
+        outer.addLayout(row)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(5000)
+        outer.addWidget(self.log_view, 1)
+        return tab
+
+    # ------------------------------------------------------------------
+    # Helpers / state
+    # ------------------------------------------------------------------
+
+    def _choose_game_dir(self) -> None:
+        value = QFileDialog.getExistingDirectory(self, "Select game folder", self.game_dir_edit.text())
+        if value:
+            self.game_dir_edit.setText(value)
+            self._set_default_work_paths(Path(value))
+            self.refresh_backups()
+            self.refresh_cheat_status()
+
+    def _choose_glossary(self) -> None:
+        value, _ = QFileDialog.getOpenFileName(self, "Select glossary CSV", self.glossary_path_edit.text(), "CSV files (*.csv);;All files (*)")
+        if value:
+            self.glossary_path_edit.setText(value)
+
+    def _set_default_work_paths(self, game_dir: Path) -> None:
+        work = game_dir / "translator_work"
+        self.texts_csv_edit.setText(str(work / "texts.csv"))
+        self.translations_csv_edit.setText(str(work / "translations.csv"))
+        self.out_dir_edit.setText(str(work / "translated_data"))
+
+    def _game_dir_path(self) -> Path:
+        value = self.game_dir_edit.text().strip()
+        if not value:
+            raise ValueError("Game folder not selected")
+        path = Path(value)
+        if not path.exists():
+            raise ValueError(f"Game folder not found: {path}")
+        return path
+
+    def _game_data_dir(self, game_dir: Path) -> Path:
+        for c in (game_dir / "www" / "data", game_dir / "data"):
+            if c.exists():
+                return c
+        raise ValueError(f"No data folder found in {game_dir}")
+
+    def save_settings(self) -> dict:
         data = {
-            "game_type": self.game_type.get(),
-            "game_dir": self.game_dir.get(),
-            "texts_csv": self.texts_csv.get(),
-            "translations_csv": self.translations_csv.get(),
-            "out_dir": self.out_dir.get(),
-            "provider": self.provider.get(),
-            "model": self.model.get(),
-            "source_lang": self.source_lang.get(),
-            "target_lang": self.target_lang.get(),
-            "batch_size": int(self.batch_size.get()),
-            "workers": int(self.workers.get()),
-            "glossary_path": self.glossary_path.get(),
-            "theme": self.theme_mode.get(),
-            "remember_api_key": self.remember_api_key.get(),
-            "reuse_memory": self.reuse_memory.get(),
-            "save_memory": self.save_memory_enabled.get(),
+            "game_type": self.game_type_combo.currentText(),
+            "game_dir": self.game_dir_edit.text(),
+            "texts_csv": self.texts_csv_edit.text(),
+            "translations_csv": self.translations_csv_edit.text(),
+            "out_dir": self.out_dir_edit.text(),
+            "provider": self.provider_combo.currentText(),
+            "model": self.model_edit.text(),
+            "source_lang": self.source_lang_edit.text(),
+            "target_lang": self.target_lang_edit.text(),
+            "batch_size": int(self.batch_size_spin.value()),
+            "workers": int(self.workers_spin.value()),
+            "glossary_path": self.glossary_path_edit.text(),
+            "theme": getattr(self, "theme_mode", "light"),
+            "remember_api_key": self.remember_api_check.isChecked(),
+            "reuse_memory": self.reuse_memory_check.isChecked(),
+            "save_memory": self.save_memory_check.isChecked(),
         }
-        if self.remember_api_key.get():
-            data["api_key"] = self.api_key.get()
-            data["api_base"] = self.api_base.get()
+        if self.remember_api_check.isChecked():
+            data["api_key"] = self.api_key_edit.text()
+            data["api_base"] = self.api_base_edit.text()
         save_app_config(data)
-        if self.remember_api_key.get():
-            self._log("Settings saved. API key/base are stored as plaintext on this machine.")
+        self._log("Settings saved. API key/base are stored as plaintext on this machine.")
+        return data
+
+    # ------------------------------------------------------------------
+    # Logging / status updates (signals)
+    # ------------------------------------------------------------------
+
+    def _append_log(self, msg: str) -> None:
+        self.log_view.appendPlainText(msg)
+        self.log_view.moveCursor(QTextCursor.End)
+
+    def _log(self, msg: str) -> None:
+        log_event(msg)
+        self.signals.log.emit(msg)
+
+    def _on_status(self, text: str) -> None:
+        self.status_label.setText(text)
+
+    def _on_progress(self, done: int, total: int) -> None:
+        if total <= 0:
+            self.progress_bar.setRange(0, 0)
+            return
+        if self.progress_bar.maximum() != total:
+            self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(done)
+
+    def _on_progress_text(self, text: str) -> None:
+        self.progress_text_label.setText(text)
+
+    def _on_finished(self) -> None:
+        self.current_worker = None
+        self._set_running_ui(False)
+
+    def _on_error(self, title: str, body: str) -> None:
+        QMessageBox.critical(self, title, body)
+
+    def _on_info(self, title: str, body: str) -> None:
+        QMessageBox.information(self, title, body)
+
+    def _on_set_text(self, target: str, value: str) -> None:
+        if target == "scan_summary":
+            self.scan_summary_label.setText(value)
+        elif target == "cheat_status":
+            self.cheat_status_label.setText(value)
+        elif target == "out_dir":
+            self.out_dir_edit.setText(value)
+        elif target == "game_type":
+            self.game_type_combo.setCurrentText(value)
+
+    def _set_running_ui(self, running: bool, name: str = "") -> None:
+        for btn in self.action_buttons:
+            btn.setEnabled(not running)
+        self.stop_button.setEnabled(running)
+        self.status_label.setText(f"Running: {name}" if running else "Idle")
+        self.progress_bar.setVisible(running)
+        if running:
+            self.translate_progress = {"done": 0, "total": 0, "started": time.monotonic()}
+            self.progress_bar.setRange(0, 0)  # indeterminate until we know total
+            self.progress_text_label.setText("")
         else:
-            self._log("Settings saved without API key/base.")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self.progress_text_label.setText("")
 
     def _check_stopped(self) -> None:
         if self.stop_requested.is_set():
@@ -383,107 +631,11 @@ class TranslatorGUI(tk.Tk):
     def stop_current(self) -> None:
         if self.current_worker and self.current_worker.is_alive():
             self.stop_requested.set()
-            self._log("Stop requested. Waiting for current safe checkpoint...")
+            self._log("Stop requested...")
 
-    def _ui_call(self, func: Callable[[], None]) -> None:
-        self.after(0, func)
-
-    def _set_running_ui(self, running: bool, name: str = "") -> None:
-        state = "disabled" if running else "normal"
-        for button in self.action_buttons:
-            button.configure(state=state)
-        self.stop_button.configure(state="normal" if running else "disabled")
-        self.status_text.set(f"Running: {name}" if running else "Idle")
-        if running:
-            self.translate_progress = {"done": 0, "total": 0, "started": time.monotonic()}
-            self.progress.configure(mode="indeterminate")
-            self.progress.start(10)
-            self.progress_text.set("")
-        else:
-            self.progress.stop()
-            self.progress.configure(mode="indeterminate", value=0)
-            self.progress_text.set("")
-
-    def _update_translate_progress(self, done: int, total: int) -> None:
-        self.translate_progress["done"] = done
-        self.translate_progress["total"] = total
-        if total <= 0:
-            return
-        if self.progress.cget("mode") != "determinate":
-            self.progress.stop()
-            self.progress.configure(mode="determinate", maximum=total)
-        self.progress.configure(value=done)
-        elapsed = time.monotonic() - float(self.translate_progress["started"] or time.monotonic())
-        if done > 0 and elapsed > 0:
-            rate = done / elapsed
-            remaining = (total - done) / rate if rate > 0 else 0
-            mins = int(remaining // 60)
-            secs = int(remaining % 60)
-            pct = int(done * 100 / total)
-            self.progress_text.set(f"{pct}% | {done}/{total} | ~{mins}m{secs:02d}s left")
-        else:
-            self.progress_text.set(f"{done}/{total}")
-
-    def _row(self, parent: ttk.Frame, row: int, label: str, widget: tk.Widget) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
-        widget.grid(row=row, column=1, columnspan=2, sticky="ew", pady=3)
-
-    def _readonly_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar) -> None:
-        entry = ttk.Entry(parent, textvariable=var, state="readonly")
-        self._row(parent, row, label, entry)
-
-    def _path_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
-        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", pady=3)
-        ttk.Button(parent, text="Browse", command=command).grid(row=row, column=2, sticky="e", padx=4, pady=3)
-
-    def _choose_game_dir(self) -> None:
-        value = filedialog.askdirectory()
-        if value:
-            self.game_dir.set(value)
-            self._set_default_work_paths(Path(value))
-            self.refresh_backups()
-            self.refresh_cheat_status()
-
-    def _set_default_work_paths(self, game_dir: Path) -> None:
-        work_dir = game_dir / "translator_work"
-        self.texts_csv.set(str(work_dir / "texts.csv"))
-        self.translations_csv.set(str(work_dir / "translations.csv"))
-        self.out_dir.set(str(work_dir / "translated_data"))
-
-    def _choose_dir(self, var: tk.StringVar) -> None:
-        value = filedialog.askdirectory()
-        if value:
-            var.set(value)
-
-    def _choose_save(self, var: tk.StringVar) -> None:
-        value = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
-        if value:
-            var.set(value)
-
-    def _choose_glossary(self) -> None:
-        value = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("All files", "*.*")])
-        if value:
-            self.glossary_path.set(value)
-
-    def _log(self, message: str) -> None:
-        log_event(message)
-        self.events.put(message)
-
-    def open_logs(self) -> None:
-        path = logs_dir()
-        path.mkdir(parents=True, exist_ok=True)
-        open_file_editor(path)
-
-    def _drain_events(self) -> None:
-        while not self.events.empty():
-            self.log.insert(tk.END, self.events.get() + "\n")
-            self.log.see(tk.END)
-        self.after(150, self._drain_events)
-
-    def _run(self, name: str, func) -> None:
+    def _run(self, name: str, func: Callable[[], None]) -> None:
         if self.current_worker and self.current_worker.is_alive():
-            messagebox.showwarning(name, "Another task is already running")
+            QMessageBox.warning(self, name, "Another task is already running")
             return
         self.stop_requested.clear()
         self.save_settings()
@@ -499,560 +651,74 @@ class TranslatorGUI(tk.Tk):
                     self._log(f"Stopped {name}.")
                 else:
                     self._log(f"Error in {name}: {exc}")
-                    self.after(0, lambda: messagebox.showerror(name, str(exc)))
+                    self.signals.error.emit(name, str(exc))
             except Exception as exc:
                 self._log(f"Error in {name}: {exc}")
-                self.after(0, lambda: messagebox.showerror(name, str(exc)))
+                self.signals.error.emit(name, str(exc))
             finally:
-                self.current_worker = None
-                self.after(0, lambda: self._set_running_ui(False))
+                self.signals.finished.emit()
+
         self.current_worker = threading.Thread(target=worker, daemon=True)
         self.current_worker.start()
 
-    def _game_dir_path(self) -> Path:
-        value = self.game_dir.get().strip()
-        if not value:
-            raise ValueError("Choose a game folder first")
-        path = Path(value)
-        if not path.exists() or not path.is_dir():
-            raise ValueError(f"Game folder not found: {path}")
-        return path
-
-    def _game_data_dir(self, game_dir: Path) -> Path:
-        data_dir = game_dir / "www" / "data"
-        if data_dir.exists():
-            return data_dir
-        data_dir = game_dir / "data"
-        if data_dir.exists():
-            return data_dir
-        raise ValueError(f"RPG Maker data folder not found in: {game_dir}")
-
-    def _backup_dirs(self, game_dir: Path) -> list[Path]:
-        backups = [path for pattern in ("data_backup_*", "data_before_restore_*") for path in game_dir.glob(pattern) if path.is_dir()]
-        return sorted(backups, key=lambda path: path.stat().st_mtime, reverse=True)
-
-    def _selected_backup_dir(self) -> Path:
-        selection = self.backups_tree.selection()
-        if not selection:
-            raise ValueError("Select a backup first")
-        return self.backup_paths[int(selection[0])]
-
-    def _selected_backup_dirs(self) -> list[Path]:
-        selection = self.backups_tree.selection()
-        if not selection:
-            raise ValueError("Select one or more backups first")
-        return [self.backup_paths[int(item)] for item in selection]
-
-    def _backup_preview(self, paths: list[Path]) -> str:
-        preview = "\n".join(str(path) for path in paths[:12])
-        if len(paths) > 12:
-            preview += f"\n...and {len(paths) - 12} more"
-        return preview
-
-    def _copy_json_files(self, source_dir: Path, target_dir: Path) -> int:
-        files = list(source_dir.glob("*.json"))
-        if not files:
-            raise ValueError(f"No JSON files found in: {source_dir}")
-        for file in files:
-            self._check_stopped()
-            shutil.copy2(file, target_dir / file.name)
-        return len(files)
-
-    def _extract_entries(self):
-        game_dir = self._game_dir_path()
-        game_type = self.game_type.get()
-        if game_type == "unity-xunity":
-            return extract_xunity(game_dir)
-        if normalize_gui_game_type(game_type) == "rpg-maker-mz":
-            return extract_rpg_maker_mz(game_dir)
-        return extract_rpg_maker_mv(game_dir)
-
-    def extract(self) -> None:
-        def job() -> None:
-            from .csv_store import save_entries
-            self._check_stopped()
-            entries = self._extract_entries()
-            self._check_stopped()
-            save_entries(entries, Path(self.texts_csv.get()))
-            self._log(f"Extracted {len(entries)} entries -> {self.texts_csv.get()}")
-        self._run("extract text", job)
-
-    def scan(self) -> None:
-        def job() -> None:
-            game_dir = self._game_dir_path()
-            self._check_stopped()
-            self._ui_call(lambda: self._set_default_work_paths(game_dir))
-            report = analyze_game(game_dir, self.provider.get(), self.target_lang.get())
-            self._check_stopped()
-            if report["engine"] in {"mv", "mz", "mv-mz"}:
-                selected_type = engine_to_gui_game_type(str(report["engine"]))
-                self._ui_call(lambda: self.game_type.set(selected_type))
-            elif report["engine"] == "unity-xunity":
-                self._ui_call(lambda: self.game_type.set("unity-xunity"))
-            write_analysis_report(report, game_dir / "translator_work" / "analysis.json")
-            summary = f"Engine: {report['engine']} | JSON files: {report['json_files']} | Text entries: {report['text_entries']} | Data folder: {report['data_dir']}"
-            self._ui_call(lambda: self.scan_summary.set(summary))
-            self._log(summary)
-            self._log(f"Contexts: {report['contexts']}")
-            self._log(f"Analysis: {game_dir / 'translator_work' / 'analysis.json'}")
-            self._ui_call(self.refresh_backups)
-            self._ui_call(self.refresh_cheat_status)
-        self._run("scan game", job)
-
-    def _dedupe_results(self, results: list[TranslationResult], wanted_ids: set[tuple[str, str]]) -> list[TranslationResult]:
-        by_id: dict[tuple[str, str], TranslationResult] = {}
-        for result in results:
-            identity = text_identity(result.file, result.key)
-            if identity in wanted_ids:
-                by_id[identity] = result
-        return list(by_id.values())
-
-    @staticmethod
-    def _estimate_batch_size(entries: list[TextEntry], target_tokens: int = 8000) -> int:
-        if not entries:
-            return 30
-        sample = entries[:min(20, len(entries))]
-        avg_chars = sum(len(e.source) + len(e.context_text) for e in sample) / len(sample)
-        avg_tokens = max(1, avg_chars / 3.5)
-        size = max(1, int(target_tokens / avg_tokens))
-        return min(size, 60)
-
-    def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
-        provider = make_provider(self.provider.get(), self.model.get(), self.api_key.get().strip() or None, self.api_base.get().strip() or None)
-        glossary_path_str = self.glossary_path.get().strip()
-        if glossary_path_str:
-            glossary_entries = load_glossary(Path(glossary_path_str))
-            if glossary_entries:
-                provider.set_glossary(format_glossary_for_prompt(glossary_entries))
-                self._log(f"Glossary: {len(glossary_entries)} entries loaded from {glossary_path_str}")
-            else:
-                self._log(f"Glossary: no entries loaded (file missing or empty): {glossary_path_str}")
-        existing = [] if self.restart.get() else (load_results(translations_csv) if translations_csv.exists() else [])
-        wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
-        results = self._dedupe_results(existing, wanted_ids)
-        completed = {text_identity(result.file, result.key) for result in results if result.target.strip() and result.target != result.source}
-        memory = {result.source: result.target for result in results if result.source.strip() and result.target.strip() and result.target != result.source}
-        work_memory = translations_csv.parent / "translation_memory.csv"
-        persistent_memory: dict[str, str] = {}
-        if self.reuse_memory.get():
-            persistent_memory = load_memory([global_memory_path(), work_memory], self.target_lang.get(), None if self.source_lang.get().lower() == "auto" else self.source_lang.get())
-            memory.update(persistent_memory)
-        if persistent_memory:
-            self._log(f"Loaded {len(persistent_memory)} memory entries")
-        pending = [entry for entry in entries if text_identity(entry.file, entry.key) not in completed]
-        to_translate: list[TextEntry] = []
-        reused = 0
-        for entry in pending:
-            if entry.source in memory:
-                results.append(TranslationResult(entry.file, entry.key, entry.source, memory[entry.source], entry.context))
-                reused += 1
-            else:
-                to_translate.append(entry)
-        if reused:
-            results = self._dedupe_results(results, wanted_ids)
-            save_results(results, translations_csv)
-            self._log(f"Reused {reused} translations from memory")
-
-        # Pre-dedup: group remaining entries by source. Translate each unique source once,
-        # then fan-out result to all entries sharing that source.
-        source_groups: dict[str, list[TextEntry]] = {}
-        for entry in to_translate:
-            source_groups.setdefault(entry.source, []).append(entry)
-        unique_to_translate = [group[0] for group in source_groups.values()]
-        duplicate_count = len(to_translate) - len(unique_to_translate)
-        if duplicate_count:
-            self._log(f"Pre-dedup: {len(to_translate)} entries -> {len(unique_to_translate)} unique sources ({duplicate_count} duplicates will be fanned out)")
-        to_translate = unique_to_translate
-
-        raw_size = int(self.batch_size.get())
-        size = self._estimate_batch_size(to_translate) if raw_size == 0 else raw_size
-        if raw_size == 0:
-            self._log(f"Auto batch size: {size} entries/batch")
-        num_workers = max(1, min(8, int(self.workers.get())))
-        source = None if self.source_lang.get().lower() == "auto" else self.source_lang.get()
-        target_lang = self.target_lang.get()
-        save_memory_enabled = self.save_memory_enabled.get()
-        provider_name = self.provider.get()
-        batches = [to_translate[s:s + size] for s in range(0, len(to_translate), size)]
-        results_lock = threading.Lock()
-        translated_count = len(results)  # already done before this loop
-
-        def _is_retryable(exc: Exception) -> tuple[bool, float]:
-            """Return (retryable, suggested_delay_seconds)."""
-            msg = str(exc)
-            # Cloudflare 524 / generic with explicit retry_after (Python dict or JSON format)
-            if "retry_after" in msg:
-                import re as _re
-                match = _re.search(r"['\"]retry_after['\"]\s*:\s*(\d+(?:\.\d+)?)", msg)
-                if match:
-                    return True, float(match.group(1))
-            if "524" in msg:
-                return True, 60.0
-            # 429 rate limit
-            if "429" in msg:
-                return True, 10.0
-            # 503 / 502 / 500 server errors
-            if any(code in msg for code in ("503", "502", "500")):
-                return True, 5.0
-            # timeout keywords
-            if any(kw in msg.lower() for kw in ("timeout", "timed out", "connection")):
-                return True, 15.0
-            return False, 0.0
-
-        def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
-            max_retries = 3
-            for attempt in range(max_retries + 1):
-                if self.stop_requested.is_set():
-                    raise RuntimeError("Stopped by user")
-                try:
-                    return provider.translate_batch(batch, target_lang, source)
-                except RuntimeError:
-                    raise
-                except Exception as exc:
-                    retryable, suggested = _is_retryable(exc)
-                    if retryable and attempt < max_retries:
-                        delay = max(suggested, 5.0 * (attempt + 1))
-                        self._log(f"Batch error (retry {attempt + 1}/{max_retries} in {delay:.0f}s): {exc}")
-                        end = time.monotonic() + delay
-                        while time.monotonic() < end:
-                            if self.stop_requested.is_set():
-                                raise RuntimeError("Stopped by user")
-                            time.sleep(0.5)
-                    else:
-                        raise
-
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
-        futures: dict[concurrent.futures.Future, list[TextEntry]] = {
-            executor.submit(run_batch, batch): batch for batch in batches
-        }
-        failed_batches: list[list[TextEntry]] = []
-
-        def _fanout_results(batch_results: list[TranslationResult]) -> list[TranslationResult]:
-            """Expand 1 result-per-unique-source to N results for all entries sharing that source."""
-            expanded: list[TranslationResult] = []
-            for r in batch_results:
-                siblings = source_groups.get(r.source, [])
-                for e in siblings:
-                    expanded.append(TranslationResult(e.file, e.key, e.source, r.target, e.context))
-                if not siblings:
-                    expanded.append(r)
-            return expanded
-        try:
-            for future in concurrent.futures.as_completed(futures):
-                if self.stop_requested.is_set():
-                    for f in futures:
-                        f.cancel()
-                    raise RuntimeError("Stopped by user")
-                batch = futures[future]
-                try:
-                    batch_results = future.result()
-                except RuntimeError:
-                    raise
-                except Exception as exc:
-                    self._log(f"Batch failed after retries (will retry at end): {exc}")
-                    failed_batches.append(batch)
-                    with results_lock:
-                        deferred_entry_count = sum(len(source_groups.get(e.source, [e])) for e in batch)
-                        translated_count += deferred_entry_count
-                        self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)} ({len(failed_batches)} batch(es) deferred)")
-                        self._ui_call(lambda d=min(translated_count, len(entries)), t=len(entries): self._update_translate_progress(d, t))
-                    continue
-                with results_lock:
-                    expanded = _fanout_results(batch_results)
-                    translated_count += len(expanded)
-                    results.extend(expanded)
-                    results = self._dedupe_results(results, wanted_ids)
-                    save_results(results, translations_csv)
-                    if save_memory_enabled:
-                        saved_memory = save_memory(work_memory, batch_results, target_lang, source, provider_name)
-                        save_memory(global_memory_path(), batch_results, target_lang, source, provider_name)
-                        if saved_memory:
-                            self._log(f"Saved {saved_memory} translations to memory")
-                    self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
-                    self._ui_call(lambda d=min(translated_count, len(entries)), t=len(entries): self._update_translate_progress(d, t))
-        finally:
-            executor.shutdown(wait=False)
-
-        # Final retry pass for failed batches: serial, longer delays, smaller batches
-        if failed_batches and not self.stop_requested.is_set():
-            self._log(f"--- Retrying {len(failed_batches)} failed batch(es) with longer delays ---")
-            time.sleep(min(60.0, 5.0))  # short cooldown before retry pass
-            still_failed: list[list[TextEntry]] = []
-            for batch in failed_batches:
-                if self.stop_requested.is_set():
-                    still_failed.append(batch)
-                    continue
-                # Split larger batches in half to reduce per-request load
-                sub_batches = [batch] if len(batch) <= 10 else [batch[:len(batch)//2], batch[len(batch)//2:]]
-                for sub in sub_batches:
-                    if self.stop_requested.is_set():
-                        still_failed.append(sub)
-                        continue
-                    try:
-                        sub_results = run_batch(sub)
-                        with results_lock:
-                            expanded = _fanout_results(sub_results)
-                            results.extend(expanded)
-                            results = self._dedupe_results(results, wanted_ids)
-                            save_results(results, translations_csv)
-                            if save_memory_enabled:
-                                save_memory(work_memory, sub_results, target_lang, source, provider_name)
-                                save_memory(global_memory_path(), sub_results, target_lang, source, provider_name)
-                            self._log(f"Recovered {len(expanded)} entries from deferred batch")
-                    except Exception as exc:
-                        self._log(f"Deferred batch still failed (keeping source): {exc}")
-                        still_failed.append(sub)
-            # Fallback to source for batches that still failed
-            for batch in still_failed:
-                with results_lock:
-                    fallback_results: list[TranslationResult] = []
-                    for unique_entry in batch:
-                        siblings = source_groups.get(unique_entry.source, [unique_entry])
-                        for e in siblings:
-                            fallback_results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
-                    results.extend(fallback_results)
-                    results = self._dedupe_results(results, wanted_ids)
-                    save_results(results, translations_csv)
-        # summary report
-        total = len(entries)
-        translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
-        fallback = total - translated
-        from_memory = reused
-        self._log(f"--- Translation report: {translated}/{total} translated, {fallback} fallback to source, {from_memory} from memory ---")
-        return results
-
-    def translate(self) -> None:
-        def job() -> None:
-            entries = load_entries(Path(self.texts_csv.get()))
-            self._translate_entries(entries, Path(self.translations_csv.get()))
-        self._run("translate", job)
-
-    def edit_table(self) -> None:
-        path = Path(self.translations_csv.get())
-        if not path.exists():
-            messagebox.showwarning("Review/Edit Translations", f"File not found: {path}")
-            return
-        TranslationEditor(self, path)
-
-    def edit_csv(self) -> None:
-        path = Path(self.translations_csv.get())
-        if not path.exists():
-            messagebox.showwarning("Open CSV Externally", f"File not found: {path}")
-            return
+    def open_logs(self) -> None:
+        path = logs_dir()
+        path.mkdir(parents=True, exist_ok=True)
         open_file_editor(path)
 
-    def _export_results(self) -> Path:
-        results = load_results(Path(self.translations_csv.get()))
-        out_dir = Path(self.out_dir.get())
-        if self.game_type.get() == "unity-xunity":
-            apply_xunity(results, out_dir)
-            self._log(f"Exported translated XUnity .txt files -> {out_dir}")
-        else:
-            apply_rpg_maker(results, out_dir)
-            self._log(f"Exported translated RPG Maker JSON -> {out_dir}")
-        return out_dir
+    # ------------------------------------------------------------------
+    # Backup management
+    # ------------------------------------------------------------------
 
-    def export_translated_data(self) -> None:
-        def job() -> None:
-            self._export_results()
-        self._run("export translated data", job)
-
-    def apply(self) -> None:
-        self.export_translated_data()
-
-    def apply_to_game(self) -> None:
-        try:
-            game_dir = self._game_dir_path()
-            data_dir = self._game_data_dir(game_dir)
-            out_dir = Path(self.out_dir.get())
-            backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
-            translated_count = len(list(out_dir.glob("*.json"))) if out_dir.exists() else 0
-        except Exception as exc:
-            messagebox.showerror("Apply to Game", str(exc))
-            return
-        ok = messagebox.askyesno(
-            "Apply to Game",
-            f"This will export translations, create a backup, then replace game JSON files.\n\nTranslated output: {out_dir}\nGame data folder: {data_dir}\nBackup to create: {backup_dir}\nCurrently exported JSON files: {translated_count}\n\nClose the game before continuing. Continue?",
-        )
-        if not ok:
-            self._log("Apply to game cancelled.")
-            return
-
-        def job() -> None:
-            out = self._export_results()
-            self._check_stopped()
-            files = list(out.rglob("*.json"))
-            if not files:
-                raise ValueError(f"No translated JSON files found in: {out}")
-            shutil.copytree(data_dir, backup_dir)
-            self._log(f"Backup created -> {backup_dir}")
-            self._check_stopped()
-            for file in files:
-                self._check_stopped()
-                destination = data_dir / file.relative_to(out)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(file, destination)
-            self._log(f"Applied {len(files)} translated files -> {data_dir}")
-            self._ui_call(self.refresh_backups)
-        self._run("apply to game", job)
-
-    def refresh_cheat_status(self) -> None:
-        value = self.game_dir.get().strip()
-        if not value:
-            self.cheat_status_text.set("Cheat plugin: no game selected")
-            return
-        game_dir = Path(value)
+    def _backup_dirs(self, game_dir: Path) -> list[Path]:
+        items: list[Path] = []
         if not game_dir.exists():
-            self.cheat_status_text.set("Cheat plugin: game folder not found")
-            return
-        status = cheat_status(game_dir)
-        if status.error:
-            self.cheat_status_text.set(f"Cheat plugin: manifest unreadable ({status.error}). Manifest: {status.manifest_path}")
-            self._log(f"Cheat manifest status error: {status.error}")
-        elif status.installed:
-            detail = "OK"
-            if status.missing_count or status.modified_count:
-                detail = f"partial: {status.missing_count} missing, {status.modified_count} modified"
-            self.cheat_status_text.set(f"Cheat plugin: installed ({status.engine}, {status.release_tag}, {status.file_count} files, {detail}). Manifest: {status.manifest_path}")
-        else:
-            self.cheat_status_text.set(f"Cheat plugin: not installed. Manifest: {status.manifest_path}")
+            return items
+        for child in game_dir.iterdir():
+            if child.is_dir() and (child.name.startswith("data_backup_") or child.name.startswith("data_before_restore_")):
+                items.append(child)
+        items.sort(key=lambda p: p.name)
+        return items
 
-    def apply_cheat_plugin(self) -> None:
-        try:
-            game_dir = self._game_dir_path()
-            engine = detect_cheat_engine(game_dir, self.game_type.get())
-            manifest_path = cheat_manifest_path(game_dir)
-            destination = game_dir / "www" if engine == "mv" else game_dir
-        except Exception as exc:
-            messagebox.showerror("Apply Cheat", str(exc))
-            return
-        ok = messagebox.askyesno(
-            "Apply Cheat",
-            f"Download and install third-party cheat plugin code from GitHub into this game folder? The game will execute this plugin when launched.\n\nSource: https://github.com/paramonos/RPG-Maker-MV-MZ-Cheat-UI-Plugin\nEngine: {engine.upper()}\nDestination: {destination}\nManifest: {manifest_path}\n\nOverwritten files will be backed up. Cheat UI toggle in game: Ctrl+C. Continue?",
-        )
-        if not ok:
-            self._log("Apply cheat cancelled.")
-            return
+    def _selected_backup_dir(self) -> Path:
+        items = self.backups_tree.selectedItems()
+        if not items:
+            raise ValueError("Select a backup first")
+        idx = self.backups_tree.indexOfTopLevelItem(items[0])
+        if idx < 0 or idx >= len(self.backup_paths):
+            raise ValueError("Invalid backup selection")
+        return self.backup_paths[idx]
 
-        def job() -> None:
-            manifest = apply_cheat(game_dir, engine, progress=lambda message: (self._check_stopped(), self._log(message))[1])
-            self._log(f"Applied cheat plugin {manifest.release_tag} ({len(manifest.files)} files)")
-            self._ui_call(self.refresh_cheat_status)
-        self._run("apply cheat", job)
+    def _selected_backup_dirs(self) -> list[Path]:
+        items = self.backups_tree.selectedItems()
+        if not items:
+            raise ValueError("Select one or more backups first")
+        paths: list[Path] = []
+        for it in items:
+            idx = self.backups_tree.indexOfTopLevelItem(it)
+            if 0 <= idx < len(self.backup_paths):
+                paths.append(self.backup_paths[idx])
+        return paths
 
-    def remove_cheat_plugin(self) -> None:
-        try:
-            game_dir = self._game_dir_path()
-            manifest_path = cheat_manifest_path(game_dir)
-        except Exception as exc:
-            messagebox.showerror("Remove Cheat", str(exc))
-            return
-        if not manifest_path.exists():
-            messagebox.showerror("Remove Cheat", f"No cheat install manifest found:\n{manifest_path}")
-            return
-        ok = messagebox.askyesno(
-            "Remove Cheat",
-            f"Remove cheat plugin using manifest only?\n\nManifest: {manifest_path}\n\nOnly files tracked by this app will be restored/removed. Continue?",
-        )
-        if not ok:
-            self._log("Remove cheat cancelled.")
-            return
-
-        def job() -> None:
-            manifest = remove_cheat(game_dir, progress=lambda message: (self._check_stopped(), self._log(message))[1])
-            self._log(f"Removed cheat plugin manifest ({len(manifest.files)} tracked files)")
-            self._ui_call(self.refresh_cheat_status)
-        self._run("remove cheat", job)
-
-    def clear_old_translation(self) -> None:
-        targets = [Path(self.texts_csv.get()), Path(self.translations_csv.get()), Path(self.out_dir.get())]
-        game_dir_value = self.game_dir.get().strip()
-        if game_dir_value:
-            targets.append(Path(game_dir_value) / "translator_work" / "translation_memory.csv")
-        existing = [path for path in targets if path.exists()]
-        if not existing:
-            messagebox.showinfo("Clear Old Translation", "No old translation files found.")
-            return
-        preview = "\n".join(str(path) for path in existing[:12])
-        if len(existing) > 12:
-            preview += f"\n...and {len(existing) - 12} more"
-        ok = messagebox.askyesno("Clear Old Translation", f"Delete generated translation files?\n\n{preview}\n\nGame backups and global translation memory will not be deleted.")
-        if not ok:
-            self._log("Clear old translation cancelled.")
-            return
-
-        def job() -> None:
-            for path in existing:
-                self._check_stopped()
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-                self._log(f"Deleted old translation output -> {path}")
-            self._ui_call(lambda: self.restart.set(True))
-            self._log("Old translation outputs cleared. Start-over mode is now enabled.")
-        self._run("clear old translation", job)
-
-    def clear_game_memory(self) -> None:
-        game_dir_value = self.game_dir.get().strip()
-        if not game_dir_value:
-            messagebox.showwarning("Clear Game Memory", "No game folder selected.")
-            return
-        path = Path(game_dir_value) / "translator_work" / "translation_memory.csv"
-        if not path.exists():
-            messagebox.showinfo("Clear Game Memory", f"No game memory file found:\n{path}")
-            return
-        ok = messagebox.askyesno("Clear Game Memory", f"Delete per-game translation memory?\n\n{path}\n\nGlobal memory will not be affected.\n\nNote: if a translate job is currently running, it may recreate this file as it saves new results.")
-        if not ok:
-            return
-        try:
-            path.unlink()
-            self._log(f"Deleted game memory -> {path}")
-            messagebox.showinfo("Clear Game Memory", f"Deleted:\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Clear Game Memory", f"Failed to delete: {exc}")
-
-    def clear_global_memory(self) -> None:
-        path = global_memory_path()
-        if not path.exists():
-            messagebox.showinfo("Clear Global Memory", f"No global memory file found:\n{path}")
-            return
-        try:
-            import csv as _csv
-            with open(path, encoding="utf-8-sig") as f:
-                count = sum(1 for _ in _csv.reader(f)) - 1
-        except Exception:
-            count = -1
-        count_str = f"{count} entries" if count >= 0 else "unknown entries"
-        ok = messagebox.askyesno(
-            "Clear Global Memory",
-            f"Delete global translation memory ({count_str})?\n\n{path}\n\nThis affects ALL games. This cannot be undone.\n\nNote: if a translate job is currently running, it may recreate this file as it saves new results. Stop translate first if you want to fully clear.",
-        )
-        if not ok:
-            return
-        try:
-            path.unlink()
-            self._log(f"Deleted global memory ({count_str}) -> {path}")
-            messagebox.showinfo("Clear Global Memory", f"Deleted ({count_str}):\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Clear Global Memory", f"Failed to delete: {exc}")
+    def _backup_preview(self, paths: list[Path], limit: int = 12) -> str:
+        preview = "\n".join(str(p) for p in paths[:limit])
+        if len(paths) > limit:
+            preview += f"\n...and {len(paths) - limit} more"
+        return preview
 
     def refresh_backups(self) -> None:
-        if not hasattr(self, "backups_tree"):
-            return
-        for item in self.backups_tree.get_children():
-            self.backups_tree.delete(item)
+        self.backups_tree.clear()
         self.backup_paths = []
-        value = self.game_dir.get().strip()
+        value = self.game_dir_edit.text().strip()
         if not value:
             return
         game_dir = Path(value)
         if not game_dir.exists():
             return
         self.backup_paths = self._backup_dirs(game_dir)
-        for index, path in enumerate(self.backup_paths):
+        for path in self.backup_paths:
             kind = "Before restore" if path.name.startswith("data_before_restore_") else "Game backup"
-            self.backups_tree.insert("", tk.END, iid=str(index), values=(kind, str(path)))
+            self.backups_tree.addTopLevelItem(QTreeWidgetItem([kind, str(path)]))
 
     def create_backup_now(self) -> None:
         try:
@@ -1060,41 +726,40 @@ class TranslatorGUI(tk.Tk):
             data_dir = self._game_data_dir(game_dir)
             backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
         except Exception as exc:
-            messagebox.showerror("Create Backup", str(exc))
+            QMessageBox.critical(self, "Create Backup", str(exc))
             return
-        ok = messagebox.askyesno("Create Backup", f"Create backup now?\n\nFrom: {data_dir}\nTo: {backup_dir}")
-        if not ok:
+        if QMessageBox.question(self, "Create Backup", f"Create backup now?\n\nFrom: {data_dir}\nTo: {backup_dir}") != QMessageBox.Yes:
             return
 
         def job() -> None:
             self._check_stopped()
             shutil.copytree(data_dir, backup_dir)
             self._log(f"Backup created -> {backup_dir}")
-            self._ui_call(self.refresh_backups)
+            self.signals.refresh_backups.emit()
         self._run("create backup", job)
 
     def open_selected_backup(self) -> None:
         try:
             open_file_editor(self._selected_backup_dir())
         except Exception as exc:
-            messagebox.showerror("Open Selected Backup", str(exc))
+            QMessageBox.critical(self, "Open Selected Backup", str(exc))
 
     def _delete_backup_paths(self, game_dir: Path, paths: list[Path]) -> None:
         def job() -> None:
-            allowed = {path.resolve() for path in self._backup_dirs(game_dir)}
+            allowed = {p.resolve() for p in self._backup_dirs(game_dir)}
             deleted = 0
             skipped = 0
-            for path in paths:
+            for p in paths:
                 self._check_stopped()
-                if path.resolve() not in allowed or not path.exists():
+                if p.resolve() not in allowed or not p.exists():
                     skipped += 1
-                    self._log(f"Skipped backup delete -> {path}")
+                    self._log(f"Skipped backup delete -> {p}")
                     continue
-                shutil.rmtree(path)
+                shutil.rmtree(p)
                 deleted += 1
-                self._log(f"Deleted backup -> {path}")
+                self._log(f"Deleted backup -> {p}")
             self._log(f"Deleted {deleted} backup(s), skipped {skipped}.")
-            self._ui_call(self.refresh_backups)
+            self.signals.refresh_backups.emit()
         self._run("delete backups", job)
 
     def delete_selected_backups(self) -> None:
@@ -1102,14 +767,10 @@ class TranslatorGUI(tk.Tk):
             game_dir = self._game_dir_path()
             paths = self._selected_backup_dirs()
         except Exception as exc:
-            messagebox.showerror("Delete Backups", str(exc))
+            QMessageBox.critical(self, "Delete Backups", str(exc))
             return
-        ok = messagebox.askyesno(
-            "Delete Backups",
-            f"Permanently delete {len(paths)} selected backup folder(s)?\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?",
-        )
-        if not ok:
-            self._log("Delete selected backups cancelled.")
+        msg = f"Permanently delete {len(paths)} selected backup folder(s)?\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?"
+        if QMessageBox.question(self, "Delete Backups", msg) != QMessageBox.Yes:
             return
         self._delete_backup_paths(game_dir, paths)
 
@@ -1118,17 +779,13 @@ class TranslatorGUI(tk.Tk):
             game_dir = self._game_dir_path()
             paths = self._backup_dirs(game_dir)
         except Exception as exc:
-            messagebox.showerror("Delete All Backups", str(exc))
+            QMessageBox.critical(self, "Delete All Backups", str(exc))
             return
         if not paths:
-            messagebox.showinfo("Delete All Backups", "No backup folders found.")
+            QMessageBox.information(self, "Delete All Backups", "No backup folders found.")
             return
-        ok = messagebox.askyesno(
-            "Delete All Backups",
-            f"Permanently delete all {len(paths)} backup folder(s)?\n\nThis includes data_backup_* and data_before_restore_* folders.\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?",
-        )
-        if not ok:
-            self._log("Delete all backups cancelled.")
+        msg = f"Permanently delete all {len(paths)} backup folder(s)?\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?"
+        if QMessageBox.question(self, "Delete All Backups", msg) != QMessageBox.Yes:
             return
         self._delete_backup_paths(game_dir, paths)
 
@@ -1138,48 +795,335 @@ class TranslatorGUI(tk.Tk):
             backup_dir = self._selected_backup_dir()
             data_dir = self._game_data_dir(game_dir)
         except Exception as exc:
-            messagebox.showerror("Restore Backup", str(exc))
+            QMessageBox.critical(self, "Restore Backup", str(exc))
             return
-        ok = messagebox.askyesno("Restore Backup", f"Restore selected backup?\n\nFrom: {backup_dir}\nTo: {data_dir}\n\nA safety copy data_before_restore_* will be created first.")
-        if not ok:
-            self._log("Restore backup cancelled.")
+        if QMessageBox.question(self, "Restore Backup", f"Restore from {backup_dir} to {data_dir}?\nA safety copy will be created first.") != QMessageBox.Yes:
             return
 
         def job() -> None:
-            restore_safety = game_dir / f"data_before_restore_{time.strftime('%Y%m%d_%H%M%S')}"
-            self._check_stopped()
-            shutil.copytree(data_dir, restore_safety)
-            self._log(f"Safety copy created -> {restore_safety}")
-            self._check_stopped()
-            copied = self._copy_json_files(backup_dir, data_dir)
-            self._log(f"Restored {copied} files from {backup_dir} -> {data_dir}")
-            self._ui_call(self.refresh_backups)
+            safety = game_dir / f"data_before_restore_{time.strftime('%Y%m%d_%H%M%S')}"
+            shutil.copytree(data_dir, safety)
+            self._log(f"Safety copy -> {safety}")
+            for f in backup_dir.rglob("*.json"):
+                self._check_stopped()
+                dest = data_dir / f.relative_to(backup_dir)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest)
+            self._log(f"Restored from {backup_dir}")
+            self.signals.refresh_backups.emit()
         self._run("restore backup", job)
+
+    def clear_old_translation(self) -> None:
+        targets = [Path(self.texts_csv_edit.text()), Path(self.translations_csv_edit.text()), Path(self.out_dir_edit.text())]
+        gd = self.game_dir_edit.text().strip()
+        if gd:
+            targets.append(Path(gd) / "translator_work" / "translation_memory.csv")
+        existing = [p for p in targets if p.exists()]
+        if not existing:
+            QMessageBox.information(self, "Clear Old Translation", "No old translation files found.")
+            return
+        preview = "\n".join(str(p) for p in existing[:12])
+        if len(existing) > 12:
+            preview += f"\n...and {len(existing) - 12} more"
+        if QMessageBox.question(self, "Clear Old Translation", f"Delete generated translation files?\n\n{preview}") != QMessageBox.Yes:
+            return
+
+        def job() -> None:
+            for p in existing:
+                self._check_stopped()
+                if p.is_dir():
+                    shutil.rmtree(p)
+                else:
+                    p.unlink()
+                self._log(f"Deleted -> {p}")
+            self.restart_check.setChecked(True)
+        self._run("clear old translation", job)
+
+    def clear_game_memory(self) -> None:
+        gd = self.game_dir_edit.text().strip()
+        if not gd:
+            QMessageBox.warning(self, "Clear Game Memory", "No game folder selected.")
+            return
+        path = Path(gd) / "translator_work" / "translation_memory.csv"
+        if not path.exists():
+            QMessageBox.information(self, "Clear Game Memory", f"No game memory file found:\n{path}")
+            return
+        if QMessageBox.question(self, "Clear Game Memory", f"Delete per-game memory?\n\n{path}\n\nGlobal memory not affected.") != QMessageBox.Yes:
+            return
+        try:
+            path.unlink()
+            self._log(f"Deleted game memory -> {path}")
+            QMessageBox.information(self, "Clear Game Memory", f"Deleted:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Clear Game Memory", f"Failed: {exc}")
+
+    def clear_global_memory(self) -> None:
+        path = global_memory_path()
+        if not path.exists():
+            QMessageBox.information(self, "Clear Global Memory", f"No global memory file found:\n{path}")
+            return
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                count = sum(1 for _ in csv.reader(f)) - 1
+        except Exception:
+            count = -1
+        cs = f"{count} entries" if count >= 0 else "unknown"
+        if QMessageBox.question(self, "Clear Global Memory", f"Delete global memory ({cs})?\n\n{path}\n\nThis affects ALL games.") != QMessageBox.Yes:
+            return
+        try:
+            path.unlink()
+            self._log(f"Deleted global memory ({cs}) -> {path}")
+            QMessageBox.information(self, "Clear Global Memory", f"Deleted ({cs}):\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Clear Global Memory", f"Failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Translation core
+    # ------------------------------------------------------------------
+
+    def _extract_entries(self) -> list:
+        game_dir = self._game_dir_path()
+        gt = self.game_type_combo.currentText()
+        if gt == "unity-xunity":
+            return extract_xunity(game_dir)
+        if normalize_gui_game_type(gt) == "rpg-maker-mz":
+            return extract_rpg_maker_mz(game_dir)
+        return extract_rpg_maker_mv(game_dir)
+
+    def _dedupe_results(self, results: list[TranslationResult], wanted_ids: set) -> list[TranslationResult]:
+        by_id: dict[tuple[str, str], TranslationResult] = {}
+        for r in results:
+            ident = text_identity(r.file, r.key)
+            if ident in wanted_ids:
+                by_id[ident] = r
+        return list(by_id.values())
+
+    @staticmethod
+    def _estimate_batch_size(entries: list[TextEntry], target_tokens: int = 8000) -> int:
+        if not entries:
+            return 30
+        sample = entries[:min(20, len(entries))]
+        avg_chars = sum(len(e.source) + len(e.context_text) for e in sample) / len(sample)
+        avg_tokens = max(1, avg_chars / 3.5)
+        return min(max(1, int(target_tokens / avg_tokens)), 60)
+
+    def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
+        provider = make_provider(self.provider_combo.currentText(), self.model_edit.text(), self.api_key_edit.text().strip() or None, self.api_base_edit.text().strip() or None)
+        gp = self.glossary_path_edit.text().strip()
+        if gp:
+            ge = load_glossary(Path(gp))
+            if ge:
+                provider.set_glossary(format_glossary_for_prompt(ge))
+                self._log(f"Glossary: {len(ge)} entries loaded from {gp}")
+        existing = [] if self.restart_check.isChecked() else (load_results(translations_csv) if translations_csv.exists() else [])
+        wanted_ids = {text_identity(e.file, e.key) for e in entries}
+        results = self._dedupe_results(existing, wanted_ids)
+        completed = {text_identity(r.file, r.key) for r in results if r.target.strip() and r.target != r.source}
+        memory = {r.source: r.target for r in results if r.source.strip() and r.target.strip() and r.target != r.source}
+        work_memory = translations_csv.parent / "translation_memory.csv"
+        if self.reuse_memory_check.isChecked():
+            persistent = load_memory([global_memory_path(), work_memory], self.target_lang_edit.text(), None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text())
+            memory.update(persistent)
+            if persistent:
+                self._log(f"Loaded {len(persistent)} memory entries")
+        pending = [e for e in entries if text_identity(e.file, e.key) not in completed]
+        to_translate: list[TextEntry] = []
+        reused = 0
+        for e in pending:
+            if e.source in memory:
+                results.append(TranslationResult(e.file, e.key, e.source, memory[e.source], e.context))
+                reused += 1
+            else:
+                to_translate.append(e)
+        if reused:
+            results = self._dedupe_results(results, wanted_ids)
+            save_results(results, translations_csv)
+            self._log(f"Reused {reused} translations from memory")
+
+        # Pre-dedup by source
+        groups: dict[str, list[TextEntry]] = {}
+        for e in to_translate:
+            groups.setdefault(e.source, []).append(e)
+        unique = [g[0] for g in groups.values()]
+        if len(to_translate) - len(unique):
+            self._log(f"Pre-dedup: {len(to_translate)} -> {len(unique)} unique sources")
+        to_translate = unique
+
+        raw_size = int(self.batch_size_spin.value())
+        size = self._estimate_batch_size(to_translate) if raw_size == 0 else raw_size
+        if raw_size == 0:
+            self._log(f"Auto batch size: {size}")
+        num_workers = max(1, min(8, int(self.workers_spin.value())))
+        source = None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text()
+        target_lang = self.target_lang_edit.text()
+        save_mem_enabled = self.save_memory_check.isChecked()
+        provider_name = self.provider_combo.currentText()
+        batches = [to_translate[s:s + size] for s in range(0, len(to_translate), size)]
+        results_lock = threading.Lock()
+        translated_count = len(results)
+
+        def _is_retryable(exc: Exception) -> tuple[bool, float]:
+            msg = str(exc)
+            if "retry_after" in msg:
+                import re as _re
+                m = _re.search(r"['\"]retry_after['\"]\s*:\s*(\d+(?:\.\d+)?)", msg)
+                if m:
+                    return True, float(m.group(1))
+            if "524" in msg:
+                return True, 60.0
+            if "429" in msg:
+                return True, 10.0
+            if any(c in msg for c in ("503", "502", "500")):
+                return True, 5.0
+            if any(k in msg.lower() for k in ("timeout", "timed out", "connection")):
+                return True, 15.0
+            return False, 0.0
+
+        def run_batch(batch: list[TextEntry]) -> list[TranslationResult]:
+            for attempt in range(4):
+                if self.stop_requested.is_set():
+                    raise RuntimeError("Stopped by user")
+                try:
+                    return provider.translate_batch(batch, target_lang, source)
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    retryable, suggested = _is_retryable(exc)
+                    if retryable and attempt < 3:
+                        delay = max(suggested, 5.0 * (attempt + 1))
+                        self._log(f"Batch error (retry {attempt + 1}/3 in {delay:.0f}s): {exc}")
+                        end = time.monotonic() + delay
+                        while time.monotonic() < end:
+                            if self.stop_requested.is_set():
+                                raise RuntimeError("Stopped by user")
+                            time.sleep(0.5)
+                    else:
+                        raise
+
+        def fanout(batch_results: list[TranslationResult]) -> list[TranslationResult]:
+            expanded = []
+            for r in batch_results:
+                siblings = groups.get(r.source, [])
+                for e in siblings:
+                    expanded.append(TranslationResult(e.file, e.key, e.source, r.target, e.context))
+                if not siblings:
+                    expanded.append(r)
+            return expanded
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+        futures = {executor.submit(run_batch, b): b for b in batches}
+        failed_batches: list[list[TextEntry]] = []
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                if self.stop_requested.is_set():
+                    for f in futures:
+                        f.cancel()
+                    raise RuntimeError("Stopped by user")
+                batch = futures[future]
+                try:
+                    br = future.result()
+                except RuntimeError:
+                    raise
+                except Exception as exc:
+                    self._log(f"Batch failed (deferred): {exc}")
+                    failed_batches.append(batch)
+                    with results_lock:
+                        translated_count += sum(len(groups.get(e.source, [e])) for e in batch)
+                        self.signals.progress.emit(min(translated_count, len(entries)), len(entries))
+                    continue
+                with results_lock:
+                    expanded = fanout(br)
+                    translated_count += len(expanded)
+                    results.extend(expanded)
+                    results = self._dedupe_results(results, wanted_ids)
+                    save_results(results, translations_csv)
+                    if save_mem_enabled:
+                        sm = save_memory(work_memory, br, target_lang, source, provider_name)
+                        save_memory(global_memory_path(), br, target_lang, source, provider_name)
+                        if sm:
+                            self._log(f"Saved {sm} translations to memory")
+                    self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)}")
+                    self.signals.progress.emit(min(translated_count, len(entries)), len(entries))
+        finally:
+            executor.shutdown(wait=False)
+
+        if failed_batches and not self.stop_requested.is_set():
+            self._log(f"--- Retrying {len(failed_batches)} deferred batch(es) ---")
+            time.sleep(5)
+            for batch in failed_batches:
+                if self.stop_requested.is_set():
+                    break
+                subs = [batch] if len(batch) <= 10 else [batch[:len(batch) // 2], batch[len(batch) // 2:]]
+                for sub in subs:
+                    try:
+                        sr = run_batch(sub)
+                        with results_lock:
+                            expanded = fanout(sr)
+                            results.extend(expanded)
+                            results = self._dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+                            if save_mem_enabled:
+                                save_memory(work_memory, sr, target_lang, source, provider_name)
+                                save_memory(global_memory_path(), sr, target_lang, source, provider_name)
+                            self._log(f"Recovered {len(expanded)} entries")
+                    except Exception as exc:
+                        self._log(f"Deferred still failed (keeping source): {exc}")
+                        with results_lock:
+                            for ue in sub:
+                                for e in groups.get(ue.source, [ue]):
+                                    results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
+                            results = self._dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+
+        translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
+        fallback = len(entries) - translated
+        self._log(f"--- Translation report: {translated}/{len(entries)} translated, {fallback} fallback, {reused} from memory ---")
+        return results
+
+    # ------------------------------------------------------------------
+    # Action handlers
+    # ------------------------------------------------------------------
+
+    def scan(self) -> None:
+        def job() -> None:
+            game_dir = self._game_dir_path()
+            self.signals.set_text.emit("scan_summary", "Scanning...")
+            report = analyze_game(game_dir, self.provider_combo.currentText(), self.target_lang_edit.text())
+            self._set_default_work_paths(game_dir)
+            if report["engine"] in {"mv", "mz", "mv-mz"}:
+                self.signals.set_text.emit("game_type", engine_to_gui_game_type(str(report["engine"])))
+            elif report["engine"] == "unity-xunity":
+                self.signals.set_text.emit("game_type", "unity-xunity")
+            write_analysis_report(report, game_dir / "translator_work" / "analysis.json")
+            summary = f"Engine: {report['engine']} | JSON files: {report['json_files']} | Text entries: {report['text_entries']} | Data folder: {report['data_dir']}"
+            self.signals.set_text.emit("scan_summary", summary)
+            self._log(summary)
+            self.signals.refresh_backups.emit()
+            self.signals.refresh_cheat.emit()
+        self._run("scan game", job)
 
     def auto_translate(self) -> None:
         def job() -> None:
-            source = None if self.source_lang.get().lower() == "auto" else self.source_lang.get()
+            source = None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text()
             game_dir = self._game_dir_path()
-            self._check_stopped()
-            self._ui_call(lambda: self._set_default_work_paths(game_dir))
+            self._set_default_work_paths(game_dir)
             out = auto_translate_game(
                 game_dir=game_dir,
-                target_lang=self.target_lang.get(),
+                target_lang=self.target_lang_edit.text(),
                 source_lang=source,
-                provider=self.provider.get(),
-                model=self.model.get() or self.provider.get(),
-                api_key=self.api_key.get().strip() or None,
-                api_base=self.api_base.get().strip() or None,
-                batch_size=int(self.batch_size.get()),
+                provider=self.provider_combo.currentText(),
+                model=self.model_edit.text() or self.provider_combo.currentText(),
+                api_key=self.api_key_edit.text().strip() or None,
+                api_base=self.api_base_edit.text().strip() or None,
+                batch_size=int(self.batch_size_spin.value()),
                 work_dir=game_dir / "translator_work",
                 in_place=False,
-                restart=self.restart.get(),
-                use_memory=self.reuse_memory.get(),
-                progress=lambda message: (self._check_stopped(), self._log(message))[1],
+                restart=self.restart_check.isChecked(),
+                use_memory=self.reuse_memory_check.isChecked(),
+                progress=lambda m: (self._check_stopped(), self._log(m))[1],
             )
-            self._check_stopped()
-            self._ui_call(lambda: self.out_dir.set(str(out)))
-            self._log(f"Auto translated and exported -> {out}")
+            self.signals.set_text.emit("out_dir", str(out))
+            self._log(f"Auto translated -> {out}")
         self._run("auto translate export", job)
 
     def pipeline(self) -> None:
@@ -1187,93 +1131,218 @@ class TranslatorGUI(tk.Tk):
             from .csv_store import save_entries
             entries = self._extract_entries()
             self._check_stopped()
-            save_entries(entries, Path(self.texts_csv.get()))
-            self._log(f"Extracted {len(entries)} entries -> {self.texts_csv.get()}")
-            results = self._translate_entries(entries, Path(self.translations_csv.get()))
+            save_entries(entries, Path(self.texts_csv_edit.text()))
+            self._log(f"Extracted {len(entries)} entries")
+            results = self._translate_entries(entries, Path(self.translations_csv_edit.text()))
             self._check_stopped()
-            out_dir = Path(self.out_dir.get())
-            if self.game_type.get() == "unity-xunity":
+            out_dir = Path(self.out_dir_edit.text())
+            if self.game_type_combo.currentText() == "unity-xunity":
                 apply_xunity(results, out_dir)
-                self._log(f"Extracted, translated, and exported XUnity .txt files -> {out_dir}")
             else:
                 apply_rpg_maker(results, out_dir)
-                self._log(f"Extracted, translated, and exported RPG Maker copy -> {out_dir}")
+            self._log(f"Exported -> {out_dir}")
         self._run("extract translate export", job)
 
+    def export_translated_data(self) -> None:
+        def job() -> None:
+            results = load_results(Path(self.translations_csv_edit.text()))
+            out_dir = Path(self.out_dir_edit.text())
+            if self.game_type_combo.currentText() == "unity-xunity":
+                apply_xunity(results, out_dir)
+            else:
+                apply_rpg_maker(results, out_dir)
+            self._log(f"Exported -> {out_dir}")
+        self._run("export translated data", job)
 
-class TranslationEditor(tk.Toplevel):
+    def apply_to_game(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+            data_dir = self._game_data_dir(game_dir)
+            out_dir = Path(self.out_dir_edit.text())
+            backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+        except Exception as exc:
+            QMessageBox.critical(self, "Apply to Game", str(exc))
+            return
+        if QMessageBox.question(self, "Apply to Game", f"This will create a backup, then replace JSON files.\n\nFrom: {out_dir}\nTo: {data_dir}\nBackup: {backup_dir}\n\nClose game first. Continue?") != QMessageBox.Yes:
+            return
+
+        def job() -> None:
+            files = list(out_dir.rglob("*.json"))
+            if not files:
+                raise ValueError(f"No translated JSON files found in: {out_dir}")
+            shutil.copytree(data_dir, backup_dir)
+            self._log(f"Backup -> {backup_dir}")
+            for f in files:
+                self._check_stopped()
+                dest = data_dir / f.relative_to(out_dir)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, dest)
+            self._log(f"Applied {len(files)} files -> {data_dir}")
+            self.signals.refresh_backups.emit()
+        self._run("apply to game", job)
+
+    def refresh_cheat_status(self) -> None:
+        v = self.game_dir_edit.text().strip()
+        if not v:
+            self.cheat_status_label.setText("Cheat plugin: no game selected")
+            return
+        gd = Path(v)
+        if not gd.exists():
+            self.cheat_status_label.setText("Cheat plugin: game folder not found")
+            return
+        try:
+            status = cheat_status(gd)
+        except Exception as exc:
+            self.cheat_status_label.setText(f"Cheat status error: {exc}")
+            return
+        if status.error:
+            self.cheat_status_label.setText(f"Cheat plugin: manifest unreadable ({status.error})")
+        elif status.installed:
+            detail = "OK"
+            if status.missing_count or status.modified_count:
+                detail = f"{status.missing_count} missing, {status.modified_count} modified"
+            self.cheat_status_label.setText(f"Cheat plugin: installed ({status.engine}, {status.release_tag}, {status.file_count} files, {detail})")
+        else:
+            self.cheat_status_label.setText(f"Cheat plugin: not installed.")
+
+    def apply_cheat_plugin(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+            engine = detect_cheat_engine(game_dir, self.game_type_combo.currentText())
+        except Exception as exc:
+            QMessageBox.critical(self, "Apply Cheat", str(exc))
+            return
+        if QMessageBox.question(self, "Apply Cheat", f"Install cheat plugin to {game_dir}?\nEngine: {engine}") != QMessageBox.Yes:
+            return
+
+        def job() -> None:
+            manifest = apply_cheat(game_dir, engine, progress=lambda m: (self._check_stopped(), self._log(m))[1])
+            self._log(f"Applied cheat {manifest.release_tag} ({len(manifest.files)} files)")
+            self.signals.refresh_cheat.emit()
+        self._run("apply cheat", job)
+
+    def remove_cheat_plugin(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+        except Exception as exc:
+            QMessageBox.critical(self, "Remove Cheat", str(exc))
+            return
+        if QMessageBox.question(self, "Remove Cheat", f"Remove cheat plugin from {game_dir}?") != QMessageBox.Yes:
+            return
+
+        def job() -> None:
+            manifest = remove_cheat(game_dir, progress=lambda m: (self._check_stopped(), self._log(m))[1])
+            self._log(f"Removed cheat ({len(manifest.files)} tracked files)")
+            self.signals.refresh_cheat.emit()
+        self._run("remove cheat", job)
+
+    def edit_table(self) -> None:
+        path = Path(self.translations_csv_edit.text())
+        if not path.exists():
+            QMessageBox.warning(self, "Review/Edit", f"File not found: {path}")
+            return
+        dlg = TranslationEditor(self, path)
+        dlg.exec()
+
+    def edit_csv(self) -> None:
+        path = Path(self.translations_csv_edit.text())
+        if not path.exists():
+            QMessageBox.warning(self, "Open CSV", f"File not found: {path}")
+            return
+        open_file_editor(path)
+
+
+# ----------------------------------------------------------------------
+# TranslationEditor dialog
+# ----------------------------------------------------------------------
+
+
+class TranslationEditor(QDialog):
     def __init__(self, parent: TranslatorGUI, path: Path) -> None:
         super().__init__(parent)
         self.path = path
-        self.title(f"Review/Edit translations - {path.name}")
-        self.geometry("1100x720")
+        self.setWindowTitle(f"Review/Edit translations - {path.name}")
+        self.resize(1100, 720)
         self.rows: list[dict[str, str]] = []
         self.filtered_indices: list[int] = []
         self.current_index: int | None = None
-        self._filter_var = tk.StringVar(value="all")
-        self._search_var = tk.StringVar()
+
         self._build()
         self._load()
 
     def _build(self) -> None:
-        main = ttk.Frame(self, padding=10)
-        main.pack(fill=tk.BOTH, expand=True)
+        layout = QVBoxLayout(self)
 
-        # filter bar
-        filter_bar = ttk.Frame(main)
-        filter_bar.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
-        ttk.Label(filter_bar, text="Filter:").pack(side=tk.LEFT, padx=(0, 4))
-        for label, value in [("All", "all"), ("Untranslated / Fallback", "fallback"), ("Translated", "translated")]:
-            ttk.Radiobutton(filter_bar, text=label, variable=self._filter_var, value=value, command=self._apply_filter).pack(side=tk.LEFT, padx=4)
-        ttk.Label(filter_bar, text="Search:").pack(side=tk.LEFT, padx=(16, 4))
-        search_entry = ttk.Entry(filter_bar, textvariable=self._search_var, width=24)
-        search_entry.pack(side=tk.LEFT, padx=4)
-        search_entry.bind("<Return>", lambda _: self._apply_filter())
-        ttk.Button(filter_bar, text="Go", command=self._apply_filter).pack(side=tk.LEFT, padx=2)
-        self.count_label = ttk.Label(filter_bar, text="")
-        self.count_label.pack(side=tk.RIGHT, padx=8)
+        # Filter bar
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("Filter:"))
+        self.filter_group = QButtonGroup(self)
+        for label, value in [("All", "all"), ("Untranslated/Fallback", "fallback"), ("Translated", "translated")]:
+            rb = QRadioButton(label)
+            rb.setProperty("filter_value", value)
+            if value == "all":
+                rb.setChecked(True)
+            rb.toggled.connect(self._apply_filter)
+            bar.addWidget(rb)
+            self.filter_group.addButton(rb)
+        bar.addWidget(QLabel("Search:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.returnPressed.connect(self._apply_filter)
+        bar.addWidget(self.search_edit, 1)
+        go = QPushButton("Go")
+        go.clicked.connect(self._apply_filter)
+        bar.addWidget(go)
+        self.count_label = QLabel("")
+        bar.addWidget(self.count_label)
+        layout.addLayout(bar)
 
-        columns = ("index", "file", "key", "source", "target")
-        self.tree = ttk.Treeview(main, columns=columns, show="headings", height=16, selectmode="browse")
-        widths = {"index": 60, "file": 200, "key": 160, "source": 280, "target": 280}
-        for column in columns:
-            self.tree.heading(column, text=column)
-            self.tree.column(column, width=widths[column], anchor=tk.W)
-        self.tree.grid(row=1, column=0, columnspan=3, sticky="nsew")
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        # Tree
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["#", "File", "Key", "Source", "Target"])
+        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.itemSelectionChanged.connect(self._on_select)
+        layout.addWidget(self.tree, 3)
 
-        scroll = ttk.Scrollbar(main, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        scroll.grid(row=1, column=3, sticky="ns")
+        # Source/target editors
+        editors = QHBoxLayout()
+        sv = QVBoxLayout()
+        sv.addWidget(QLabel("Source"))
+        self.source_box = QPlainTextEdit()
+        self.source_box.setReadOnly(True)
+        sv.addWidget(self.source_box)
+        editors.addLayout(sv)
+        tv = QVBoxLayout()
+        tv.addWidget(QLabel("Target"))
+        self.target_box = QPlainTextEdit()
+        tv.addWidget(self.target_box)
+        editors.addLayout(tv)
+        layout.addLayout(editors, 2)
 
-        ttk.Label(main, text="Source").grid(row=2, column=0, sticky="w", pady=(10, 2))
-        ttk.Label(main, text="Target").grid(row=2, column=1, sticky="w", pady=(10, 2))
-        self.source_box = tk.Text(main, height=6, wrap=tk.WORD)
-        self.target_box = tk.Text(main, height=6, wrap=tk.WORD)
-        self.source_box.grid(row=3, column=0, sticky="nsew", padx=(0, 6))
-        self.target_box.grid(row=3, column=1, columnspan=2, sticky="nsew")
-
-        buttons = ttk.Frame(main)
-        buttons.grid(row=4, column=0, columnspan=3, sticky="ew", pady=8)
-        ttk.Button(buttons, text="Save Current Row", command=self._save_current).pack(side=tk.LEFT, padx=4)
-        ttk.Button(buttons, text="Save CSV", command=self._save_file).pack(side=tk.LEFT, padx=4)
-        ttk.Button(buttons, text="Use Source as Translation", command=self._copy_source).pack(side=tk.LEFT, padx=4)
-        ttk.Button(buttons, text="Close", command=self.destroy).pack(side=tk.RIGHT, padx=4)
-
-        main.columnconfigure(0, weight=1)
-        main.columnconfigure(1, weight=1)
-        main.columnconfigure(2, weight=1)
-        main.rowconfigure(1, weight=3)
-        main.rowconfigure(3, weight=1)
+        # Buttons
+        btns = QHBoxLayout()
+        save_row = QPushButton("Save Current Row")
+        save_row.clicked.connect(lambda: self._save_current(update_tree=True))
+        btns.addWidget(save_row)
+        save_csv = QPushButton("Save CSV")
+        save_csv.clicked.connect(self._save_file)
+        btns.addWidget(save_csv)
+        copy_src = QPushButton("Use Source as Translation")
+        copy_src.clicked.connect(self._copy_source)
+        btns.addWidget(copy_src)
+        btns.addStretch()
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        btns.addWidget(close)
+        layout.addLayout(btns)
 
     def _load(self) -> None:
         with self.path.open("r", newline="", encoding="utf-8-sig") as fp:
             self.rows = [dict(row) for row in csv.DictReader(fp)]
         self._apply_filter()
         if self.filtered_indices:
-            first_iid = str(self.filtered_indices[0])
-            self.tree.selection_set(first_iid)
-            self.tree.see(first_iid)
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
 
     def _is_fallback(self, row: dict[str, str]) -> bool:
         src = row.get("source", "").strip()
@@ -1282,63 +1351,80 @@ class TranslationEditor(tk.Toplevel):
 
     def _apply_filter(self) -> None:
         self._save_current(update_tree=False)
-        mode = self._filter_var.get()
-        search = self._search_var.get().lower()
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        mode = "all"
+        for btn in self.filter_group.buttons():
+            if btn.isChecked():
+                mode = btn.property("filter_value")
+                break
+        search = self.search_edit.text().lower()
+        self.tree.clear()
         self.filtered_indices = []
-        for index, row in enumerate(self.rows):
+        for i, row in enumerate(self.rows):
             if mode == "fallback" and not self._is_fallback(row):
                 continue
             if mode == "translated" and self._is_fallback(row):
                 continue
             if search and search not in (row.get("source", "") + row.get("target", "") + row.get("key", "")).lower():
                 continue
-            self.filtered_indices.append(index)
-            tag = "fallback" if self._is_fallback(row) else ""
-            self.tree.insert("", tk.END, iid=str(index), values=(index, row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")), tags=(tag,))
-        self.tree.tag_configure("fallback", foreground="#cc4400")
-        fallback_count = sum(1 for r in self.rows if self._is_fallback(r))
-        self.count_label.configure(text=f"Showing {len(self.filtered_indices)}/{len(self.rows)} | Fallback: {fallback_count}")
+            item = QTreeWidgetItem([str(i), row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")])
+            item.setData(0, Qt.UserRole, i)
+            if self._is_fallback(row):
+                for col in range(5):
+                    item.setForeground(col, QColor(204, 68, 0))
+            self.tree.addTopLevelItem(item)
+            self.filtered_indices.append(i)
+        fb = sum(1 for r in self.rows if self._is_fallback(r))
+        self.count_label.setText(f"Showing {len(self.filtered_indices)}/{len(self.rows)} | Fallback: {fb}")
         self.current_index = None
 
-    def _on_select(self, _event=None) -> None:
-        selection = self.tree.selection()
-        if not selection:
+    def _on_select(self) -> None:
+        items = self.tree.selectedItems()
+        if not items:
             return
         if self.current_index is not None:
             self._save_current(update_tree=True)
-        self.current_index = int(selection[0])
+        self.current_index = int(items[0].data(0, Qt.UserRole))
         row = self.rows[self.current_index]
-        self.source_box.delete("1.0", tk.END)
-        self.source_box.insert("1.0", row.get("source", ""))
-        self.target_box.delete("1.0", tk.END)
-        self.target_box.insert("1.0", row.get("target", ""))
+        self.source_box.setPlainText(row.get("source", ""))
+        self.target_box.setPlainText(row.get("target", ""))
 
-    def _save_current(self, update_tree: bool = True) -> None:
+    def _save_current(self, update_tree: bool) -> None:
         if self.current_index is None:
             return
         row = self.rows[self.current_index]
-        row["target"] = self.target_box.get("1.0", tk.END).rstrip("\n")
-        if update_tree and self.tree.exists(str(self.current_index)):
-            tag = "fallback" if self._is_fallback(row) else ""
-            self.tree.item(str(self.current_index), values=(self.current_index, row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")), tags=(tag,))
+        row["target"] = self.target_box.toPlainText().rstrip("\n")
+        if update_tree:
+            for i in range(self.tree.topLevelItemCount()):
+                it = self.tree.topLevelItem(i)
+                if int(it.data(0, Qt.UserRole)) == self.current_index:
+                    it.setText(4, row["target"])
+                    color = QColor(204, 68, 0) if self._is_fallback(row) else self.tree.palette().text().color()
+                    for c in range(5):
+                        it.setForeground(c, color)
+                    break
 
     def _copy_source(self) -> None:
-        self.target_box.delete("1.0", tk.END)
-        self.target_box.insert("1.0", self.source_box.get("1.0", tk.END).rstrip("\n"))
-        self._save_current()
+        self.target_box.setPlainText(self.source_box.toPlainText())
+        self._save_current(update_tree=True)
 
     def _save_file(self) -> None:
-        self._save_current()
+        self._save_current(update_tree=True)
         fieldnames = ["file", "key", "source", "target", "context"]
         with self.path.open("w", newline="", encoding="utf-8") as fp:
-            writer = csv.DictWriter(fp, fieldnames=fieldnames)
-            writer.writeheader()
+            w = csv.DictWriter(fp, fieldnames=fieldnames)
+            w.writeheader()
             for row in self.rows:
-                writer.writerow({name: row.get(name, "") for name in fieldnames})
-        messagebox.showinfo("Save CSV", f"Saved {self.path}")
+                w.writerow({n: row.get(n, "") for n in fieldnames})
+        QMessageBox.information(self, "Save CSV", f"Saved {self.path}")
 
 
 def main() -> None:
-    TranslatorGUI().mainloop()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    win = TranslatorGUI()
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
