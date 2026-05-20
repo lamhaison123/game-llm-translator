@@ -40,9 +40,10 @@ class TranslatorGUI(tk.Tk):
         self.translate_progress: dict[str, float | int] = {"done": 0, "total": 0, "started": 0.0}
         self._build()
         self.after(150, self._drain_events)
-        self._apply_theme(load_app_config().get("theme", "light"))
 
     def _build(self) -> None:
+        # Apply theme BEFORE creating widgets so sv-ttk doesn't need to re-style them later.
+        self._apply_theme(load_app_config().get("theme", "light"))
         root = ttk.Frame(self, padding=12)
         root.pack(fill=tk.BOTH, expand=True)
 
@@ -77,7 +78,9 @@ class TranslatorGUI(tk.Tk):
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
         self._update_api_fields()
-        self.refresh_backups()
+        # Defer initial backups refresh until after first paint so Treeview row
+        # heights settle without forcing a visible reflow on the Backups tab.
+        self.after(0, self.refresh_backups)
 
     def _set_window_icon(self) -> None:
         import sys
@@ -132,17 +135,25 @@ class TranslatorGUI(tk.Tk):
         self._build_logs_tab(notebook)
         self.notebook = notebook
         # Pre-render every tab once so first switch doesn't show widgets popping in.
-        # We force layout calc by selecting each tab + updating, then return to first.
-        self.after(50, self._prerender_tabs)
+        # Wait until window is mapped (visible) before pre-render — fixes timing race
+        # where after(50) fires before DWM has finished mapping the window.
+        self.bind("<Map>", self._on_map_prerender, add="+")
+
+    def _on_map_prerender(self, _event=None) -> None:
+        self.unbind("<Map>")
+        self.after(10, self._prerender_tabs)
 
     def _prerender_tabs(self) -> None:
         try:
             tabs = self.notebook.tabs()
             for tab_id in tabs:
                 self.notebook.select(tab_id)
-                self.update_idletasks()
+                # update() flushes expose+paint events; update_idletasks() only flushes geometry.
+                # sv-ttk's PNG bitmaps need expose events to actually composite.
+                self.update()
             if tabs:
                 self.notebook.select(tabs[0])
+                self.update()
         except Exception:
             pass
 
