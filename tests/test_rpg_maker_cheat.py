@@ -87,7 +87,7 @@ def test_download_cheat_release_reuses_valid_cached_archive(tmp_path, monkeypatc
 
     monkeypatch.setattr(cheat.requests, "get", fake_get)
 
-    assert cheat.download_cheat_release("mz", tmp_path) == (cached, "v1", "rpg-mz-cheat.tar.gz")
+    assert cheat.download_cheat_release("mz", tmp_path, prefer_bundled=False) == (cached, "v1", "rpg-mz-cheat.tar.gz")
     assert len(calls) == 1
 
 
@@ -168,3 +168,18 @@ def test_cheat_status_counts_missing_and_modified_files(tmp_path):
     assert status.file_count == 3
     assert status.missing_count == 1
     assert status.modified_count == 1
+
+
+def test_find_bundled_archive_returns_existing_path_when_vendored():
+    from game_llm_translator.rpg_maker_cheat import _find_bundled_archive
+    mv = _find_bundled_archive("mv")
+    if mv is not None:
+        assert mv.exists()
+        assert "mv" in mv.name.lower()
+
+
+def test_bundled_tag_extracts_version():
+    from game_llm_translator.rpg_maker_cheat import _bundled_tag
+    assert _bundled_tag("rpg-mv-cheat-1.0.3-core.tar.gz") == "v1.0.3"
+    assert _bundled_tag("rpg-mz-cheat-2.5.0-core.tar.gz") == "v2.5.0"
+    assert _bundled_tag("anything-no-version.tar.gz") == "bundled"

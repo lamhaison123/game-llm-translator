@@ -52,6 +52,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --name game-translator-gui \
             --paths src --distpath dist --workpath build \
+            --add-data "vendor:vendor" \
             gui_launcher.py
 
       - name: Build (Windows)
@@ -59,6 +60,7 @@ jobs:
         run: |
           pyinstaller --noconfirm --windowed --name game-translator-gui `
             --paths src --distpath dist --workpath build `
+            --add-data "vendor;vendor" `
             gui_launcher.py
 
       - name: Package artifact (Linux)

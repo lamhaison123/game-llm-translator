@@ -180,7 +180,48 @@ def _validate_cached_archive(path: Path) -> bool:
     return True
 
 
-def download_cheat_release(engine: str, cache_dir: Path | None = None) -> tuple[Path, str, str]:
+def _bundled_cheat_dir() -> Path:
+    """Return path to vendored cheat archives shipped with the package.
+
+    When running as a PyInstaller bundle, files added via --add-data live under sys._MEIPASS.
+    Otherwise they're at <repo>/vendor/cheat/ relative to the source tree.
+    """
+    import sys
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "vendor" / "cheat"
+    return Path(__file__).resolve().parent.parent.parent / "vendor" / "cheat"
+
+
+def _find_bundled_archive(engine: str) -> Path | None:
+    """Look for a bundled cheat archive matching the engine; return path or None."""
+    bundled_dir = _bundled_cheat_dir()
+    if not bundled_dir.exists():
+        return None
+    for archive in bundled_dir.glob("rpg-*-cheat-*-core.tar.gz"):
+        name = archive.name.lower()
+        if engine == "mv" and "rpg-mv-cheat" in name:
+            return archive
+        if engine == "mz" and "rpg-mz-cheat" in name:
+            return archive
+    return None
+
+
+def _bundled_tag(archive_name: str) -> str:
+    """Extract version tag from filename like 'rpg-mv-cheat-1.0.3-core.tar.gz' -> 'v1.0.3'."""
+    parts = archive_name.split("-")
+    for i, p in enumerate(parts):
+        if p.replace(".", "").isdigit():
+            return f"v{p}"
+    return "bundled"
+
+
+def download_cheat_release(engine: str, cache_dir: Path | None = None, prefer_bundled: bool = True) -> tuple[Path, str, str]:
+    # Try bundled archive first - works offline, no GitHub rate limit
+    if prefer_bundled:
+        bundled = _find_bundled_archive(engine)
+        if bundled is not None and _validate_cached_archive(bundled):
+            return bundled, _bundled_tag(bundled.name), bundled.name
+
     cache_root = cache_dir or _cache_dir()
     response = requests.get(CHEAT_RELEASE_API, timeout=30)
     response.raise_for_status()
