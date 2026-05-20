@@ -130,6 +130,21 @@ class TranslatorGUI(tk.Tk):
         self._build_apply_tab(notebook)
         self._build_recovery_tab(notebook)
         self._build_logs_tab(notebook)
+        self.notebook = notebook
+        # Pre-render every tab once so first switch doesn't show widgets popping in.
+        # We force layout calc by selecting each tab + updating, then return to first.
+        self.after(50, self._prerender_tabs)
+
+    def _prerender_tabs(self) -> None:
+        try:
+            tabs = self.notebook.tabs()
+            for tab_id in tabs:
+                self.notebook.select(tab_id)
+                self.update_idletasks()
+            if tabs:
+                self.notebook.select(tabs[0])
+        except Exception:
+            pass
 
     def _build_game_tab(self, notebook: ttk.Notebook) -> None:
         tab = ttk.Frame(notebook, padding=12)
