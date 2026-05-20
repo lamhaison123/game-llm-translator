@@ -14,8 +14,9 @@ Tool dịch text game RPG Maker MV/MZ và Unity (XUnity AutoTranslator) bằng L
 - **Glossary CSV**: đặt term/translation cố định, inject vào system prompt mỗi batch
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
 - **Cheat plugin**: cài/gỡ RPG Maker MV/MZ Cheat UI Plugin từ GitHub release
-- **GUI desktop**:
-  - Light/Dark mode toggle (sv-ttk theme)
+- **GUI desktop** (PySide6 / Qt6):
+  - Light/Dark mode toggle (custom Qt palette)
+  - QTabWidget — instant tab switch, không flicker
   - Progress bar với % và ETA real-time
   - Editor với filter (All / Untranslated+Fallback / Translated) + search, fallback rows highlight đỏ
   - Backup tab: tạo/restore/xóa multi-select; clear game/global memory; clear old translation
@@ -214,21 +215,26 @@ pytest
 ```powershell
 pyinstaller --noconfirm --windowed --name game-translator-gui `
   --paths src --distpath dist --workpath build `
+  --add-data "vendor;vendor" --add-data "assets;assets" `
+  --icon assets/icon.ico `
+  --exclude-module PySide6.QtWebEngineCore `
+  --exclude-module PySide6.QtMultimedia `
+  --exclude-module PySide6.QtQml `
   gui_launcher.py
 ```
 
-Output: `dist/game-translator-gui/game-translator-gui.exe` (one-folder mode).
+Output: `dist/game-translator-gui/game-translator-gui.exe` (~140MB one-folder mode).
 
 ### Linux
 
-Yêu cầu Python 3.10+ và `python3-tk`:
+Yêu cầu Python 3.10+ và Qt6 runtime libs:
 
 ```bash
 # Ubuntu/Debian
-sudo apt install python3-tk python3-venv
-
-# Fedora
-sudo dnf install python3-tkinter
+sudo apt install python3-venv \
+  libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+  libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+  libxcb-xkb1 libxcb-cursor0 libegl1 libglib2.0-0 libdbus-1-3 libgl1
 ```
 
 Build:
@@ -237,6 +243,10 @@ Build:
 pip install pyinstaller
 pyinstaller --noconfirm --name game-translator-gui \
   --paths src --distpath dist --workpath build \
+  --add-data "vendor:vendor" --add-data "assets:assets" \
+  --exclude-module PySide6.QtWebEngineCore \
+  --exclude-module PySide6.QtMultimedia \
+  --exclude-module PySide6.QtQml \
   gui_launcher.py
 ```
 
@@ -264,7 +274,7 @@ Output: `dist/game-translator-gui.app`.
 ## Architecture
 
 - `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit)
-- `gui.py`: Tkinter GUI với sv-ttk theme
+- `gui.py`: PySide6 (Qt6) GUI — QMainWindow + QTabWidget + custom dark/light palette
 - `auto.py`: workflow auto cho RPG Maker + Unity
 - `rpg_maker_common.py` / `rpg_maker_mv.py` / `rpg_maker_mz.py`: extract + apply MV/MZ
 - `rpg_maker_cheat.py`: cài/gỡ Cheat UI Plugin
