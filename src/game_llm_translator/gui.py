@@ -31,6 +31,7 @@ class TranslatorGUI(tk.Tk):
         self.title("Game LLM Translator")
         self.geometry("1060x780")
         self.minsize(980, 680)
+        self._set_window_icon()
         self.events: queue.Queue[str] = queue.Queue()
         self.stop_requested = threading.Event()
         self.current_worker: threading.Thread | None = None
@@ -77,6 +78,24 @@ class TranslatorGUI(tk.Tk):
         root.rowconfigure(1, weight=1)
         self._update_api_fields()
         self.refresh_backups()
+
+    def _set_window_icon(self) -> None:
+        import sys
+        if hasattr(sys, "_MEIPASS"):
+            asset_dir = Path(sys._MEIPASS) / "assets"
+        else:
+            asset_dir = Path(__file__).resolve().parent.parent.parent / "assets"
+        try:
+            ico = asset_dir / "icon.ico"
+            png = asset_dir / "icon.png"
+            if sys.platform == "win32" and ico.exists():
+                self.iconbitmap(default=str(ico))
+            elif png.exists():
+                photo = tk.PhotoImage(file=str(png))
+                self.iconphoto(True, photo)
+                self._icon_photo = photo  # keep reference
+        except Exception:
+            pass
 
     def _build_header(self, parent: ttk.Frame) -> None:
         header = ttk.Frame(parent)
