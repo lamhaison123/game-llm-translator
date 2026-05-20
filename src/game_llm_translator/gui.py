@@ -1157,19 +1157,30 @@ class TranslatorGUI(QMainWindow):
     def apply_to_game(self) -> None:
         try:
             game_dir = self._game_dir_path()
-            data_dir = self._game_data_dir(game_dir)
             out_dir = Path(self.out_dir_edit.text())
-            backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+            is_xunity = self.game_type_combo.currentText() == "unity-xunity"
+            if is_xunity:
+                data_dir = detect_xunity(game_dir)
+                if data_dir is None:
+                    raise ValueError(f"XUnity Translation folder not found: {game_dir}")
+                backup_dir = game_dir / f"translation_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+                file_glob = "*.txt"
+                label = "Translation TXT files"
+            else:
+                data_dir = self._game_data_dir(game_dir)
+                backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+                file_glob = "*.json"
+                label = "RPG Maker JSON files"
         except Exception as exc:
             QMessageBox.critical(self, "Apply to Game", str(exc))
             return
-        if QMessageBox.question(self, "Apply to Game", f"This will create a backup, then replace JSON files.\n\nFrom: {out_dir}\nTo: {data_dir}\nBackup: {backup_dir}\n\nClose game first. Continue?") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Apply to Game", f"This will create a backup, then replace {label}.\n\nFrom: {out_dir}\nTo: {data_dir}\nBackup: {backup_dir}\n\nClose game first. Continue?") != QMessageBox.Yes:
             return
 
         def job() -> None:
-            files = list(out_dir.rglob("*.json"))
+            files = list(out_dir.rglob(file_glob))
             if not files:
-                raise ValueError(f"No translated JSON files found in: {out_dir}")
+                raise ValueError(f"No translated {label} found in: {out_dir}")
             shutil.copytree(data_dir, backup_dir)
             self._log(f"Backup -> {backup_dir}")
             for f in files:

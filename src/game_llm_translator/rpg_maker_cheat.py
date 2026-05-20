@@ -300,7 +300,7 @@ def _extract_archive(archive_path: Path, target_dir: Path) -> None:
     if name.endswith(".tar.gz") or name.endswith(".tgz"):
         safe_members = _safe_tar_members(archive_path)
         with tarfile.open(archive_path, "r:gz") as archive:
-            archive.extractall(target_dir, members=safe_members)
+            archive.extractall(target_dir, members=safe_members, filter="data")
         return
     raise ValueError(f"Unsupported cheat release archive: {archive_path.name}")
 

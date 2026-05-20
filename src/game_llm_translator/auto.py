@@ -151,6 +151,8 @@ def auto_translate_game(
     if results:
         results = _dedupe_results(results, {text_identity(entry.file, entry.key) for entry in entries})
         save_results(results, translations_csv)
+    if batch_size <= 0:
+        batch_size = 30
     for start in range(0, len(to_translate), batch_size):
         batch = to_translate[start:start + batch_size]
         batch_results = translator.translate_batch(batch, target_lang, source_lang)

@@ -51,11 +51,14 @@ def _parse_line(line: str) -> tuple[str, str] | None:
 
 
 def _iter_xunity_text_files(translation_dir: Path) -> Iterator[Path]:
-    """Yield all *.txt files under Translation/*/Text/ except resizer files."""
-    for txt in translation_dir.rglob("*.txt"):
-        if txt.name.endswith("resizer.txt"):
+    """Yield Translation/{Lang}/Text/*.txt files except resizer files."""
+    for text_dir in translation_dir.glob("*/Text"):
+        if not text_dir.is_dir():
             continue
-        yield txt
+        for txt in text_dir.glob("*.txt"):
+            if txt.name.endswith("resizer.txt"):
+                continue
+            yield txt
 
 
 def extract_xunity(game_dir: Path) -> list[TextEntry]:
@@ -91,9 +94,8 @@ def extract_xunity(game_dir: Path) -> list[TextEntry]:
 def apply_xunity(results: list[TranslationResult], output_dir: Path) -> None:
     """Write translated entries back, grouped by source file, preserving non-translatable lines.
 
-    Output structure mirrors input: results' `file` paths are used as relative anchors;
-    we write each file under `output_dir` keeping its filename (no nested folders since
-    XUAT flat-loads all .txt files in Translation/{Lang}/Text/).
+    Output structure mirrors the input path below the detected Translation root. This avoids
+    filename collisions when multiple language/Text folders contain the same filename.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     by_file: dict[Path, dict[str, str]] = {}
@@ -117,5 +119,8 @@ def apply_xunity(results: list[TranslationResult], output_dir: Path) -> None:
                 out_lines.append(line)
             else:
                 out_lines.append(f"{original}={new_target}")
-        target = output_dir / source_file.name
+        translation_root = next((parent for parent in source_file.parents if parent.name == "Translation"), None)
+        relative = source_file.relative_to(translation_root) if translation_root is not None else Path(source_file.name)
+        target = output_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("\n".join(out_lines) + "\n", encoding="utf-8")

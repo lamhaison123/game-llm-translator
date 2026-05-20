@@ -381,8 +381,6 @@ class AnthropicProvider(LLMProvider):
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
-            thinking={"type": "adaptive"},
-            output_config={"effort": "high"},
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": _user_prompt(entries, target_lang, source_lang)}],
         )

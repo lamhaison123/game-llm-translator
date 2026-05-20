@@ -47,19 +47,26 @@ def is_supported_json_engine(engine: str | None) -> bool:
 
 
 def normalize_gui_game_type(value: str | None) -> str:
+    if value in {"unity-xunity", "xunity"}:
+        return "unity-xunity"
     if value in {"rpg-maker-mz", "mz"}:
         return "rpg-maker-mz"
     return "rpg-maker-mv"
 
 
 def engine_to_gui_game_type(engine: str | None) -> str:
+    if engine == "unity-xunity":
+        return "unity-xunity"
     if engine == "mz":
         return "rpg-maker-mz"
     return "rpg-maker-mv"
 
 
 def gui_game_type_to_engine(value: str | None) -> str:
-    return "mz" if normalize_gui_game_type(value) == "rpg-maker-mz" else "mv"
+    normalized = normalize_gui_game_type(value)
+    if normalized == "unity-xunity":
+        return "unity-xunity"
+    return "mz" if normalized == "rpg-maker-mz" else "mv"
 
 
 def _is_text(value: Any) -> bool:

@@ -3,10 +3,14 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Callable, IO
 
 from .models import TextEntry, TranslationResult
+
+
+_WRITE_LOCK = threading.Lock()
 
 
 def _atomic_write_text(path: Path, write_fn: Callable[[IO[str]], None]) -> None:
@@ -15,7 +19,8 @@ def _atomic_write_text(path: Path, write_fn: Callable[[IO[str]], None]) -> None:
     try:
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as fp:
             write_fn(fp)
-        os.replace(tmp, path)
+        with _WRITE_LOCK:
+            os.replace(tmp, path)
     except Exception:
         try:
             os.unlink(tmp)

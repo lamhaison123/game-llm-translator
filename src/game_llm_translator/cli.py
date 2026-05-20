@@ -14,6 +14,7 @@ from .csv_store import load_entries, load_results, save_entries, save_results
 from .editor import open_file_editor
 from .llm import make_provider
 from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz
+from .xunity import apply_xunity, extract_xunity
 from .unity import extract_unity
 from .models import TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, save_memory
@@ -21,11 +22,15 @@ from .translation_memory import global_memory_path, load_memory, save_memory
 app = typer.Typer(help="Translate RPG Maker and Unity game text via LLM API.")
 console = Console()
 
-GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "unity"]
+GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "unity", "unity-xunity"]
 
 
 def _is_rpg_maker_type(game_type: GameType) -> bool:
     return game_type in {"rpg-maker", "rpg-maker-mv", "rpg-maker-mz"}
+
+
+def _is_xunity_type(game_type: GameType) -> bool:
+    return game_type == "unity-xunity"
 
 
 def _extract(game_type: GameType, game_dir: Path):
@@ -35,9 +40,11 @@ def _extract(game_type: GameType, game_dir: Path):
         return extract_rpg_maker_mz(game_dir)
     if _is_rpg_maker_type(game_type):
         return extract_rpg_maker(game_dir)
+    if game_type == "unity-xunity":
+        return extract_xunity(game_dir)
     if game_type == "unity":
         return extract_unity(game_dir)
-    raise typer.BadParameter("game_type must be rpg-maker, rpg-maker-mv, rpg-maker-mz, or unity")
+    raise typer.BadParameter("game_type must be rpg-maker, rpg-maker-mv, rpg-maker-mz, unity-xunity, or unity")
 
 
 @app.command()
@@ -94,7 +101,7 @@ def scan(
 
 @app.command()
 def extract(
-    game_type: GameType = typer.Argument(..., help="rpg-maker, rpg-maker-mv, rpg-maker-mz, or unity"),
+    game_type: GameType = typer.Argument(..., help="rpg-maker, rpg-maker-mv, rpg-maker-mz, unity-xunity, or unity"),
     game_dir: Path = typer.Argument(..., exists=True, file_okay=False),
     out: Path = typer.Option(Path("texts.csv"), "--out", "-o"),
 ):
@@ -195,15 +202,18 @@ def edit(
 
 @app.command()
 def apply(
-    game_type: GameType = typer.Argument(..., help="rpg-maker, rpg-maker-mv, rpg-maker-mz, or unity"),
+    game_type: GameType = typer.Argument(..., help="rpg-maker, rpg-maker-mv, rpg-maker-mz, unity-xunity, or unity"),
     translations_csv: Path = typer.Argument(..., exists=True),
     out_dir: Path = typer.Option(Path("translated_data"), "--out-dir"),
 ):
-    """Apply translations. RPG Maker JSON supported; Unity export is CSV-only for manual import."""
+    """Apply translations. RPG Maker JSON and Unity XUnity TXT supported; legacy unity exports CSV."""
     results = load_results(translations_csv)
     if _is_rpg_maker_type(game_type):
         apply_rpg_maker(results, out_dir)
         console.print(f"Wrote RPG Maker translated JSON -> {out_dir}")
+    elif _is_xunity_type(game_type):
+        apply_xunity(results, out_dir)
+        console.print(f"Wrote XUnity translated TXT -> {out_dir}")
     else:
         save_results(results, out_dir / "unity_translations_for_import.csv")
         console.print(f"Wrote Unity import CSV -> {out_dir / 'unity_translations_for_import.csv'}")
@@ -232,6 +242,8 @@ def pipeline(
     results = _translate_with_resume(entries, translations_csv, target_lang, None, provider, model, api_key=api_key, api_base=api_base, use_memory=not no_memory, memory=memory)
     if _is_rpg_maker_type(game_type):
         apply_rpg_maker(results, out_dir)
+    elif _is_xunity_type(game_type):
+        apply_xunity(results, out_dir)
     else:
         save_results(results, out_dir / "unity_translations_for_import.csv")
     console.print(f"Done -> {work_dir}")

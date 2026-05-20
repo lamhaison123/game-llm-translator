@@ -113,8 +113,16 @@ def test_extract_xunity_dedupes_within_same_file(tmp_path):
     assert len(entries) == 1
 
 
-def test_extract_xunity_empty_when_no_translation_dir(tmp_path):
-    assert extract_xunity(tmp_path) == []
+def test_extract_xunity_only_scans_language_text_dirs(tmp_path):
+    (tmp_path / "Translation" / "vi" / "Text").mkdir(parents=True)
+    (tmp_path / "Translation" / "config.txt").write_text("bad=BAD\n", encoding="utf-8")
+    (tmp_path / "Translation" / "vi" / "Other").mkdir(parents=True)
+    (tmp_path / "Translation" / "vi" / "Other" / "other.txt").write_text("bad2=BAD\n", encoding="utf-8")
+    (tmp_path / "Translation" / "vi" / "Text" / "main.txt").write_text("good=\n", encoding="utf-8")
+
+    entries = extract_xunity(tmp_path)
+
+    assert [e.source for e in entries] == ["good"]
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +144,7 @@ def test_apply_xunity_writes_translations_back(tmp_path):
     ]
     apply_xunity(results, out_dir)
 
-    written = (out_dir / "main.txt").read_text(encoding="utf-8")
+    written = (out_dir / "vi" / "Text" / "main.txt").read_text(encoding="utf-8")
     assert "こんにちは=Xin chào" in written
     assert "foo=fú" in written
     assert "#set level 1" in written
@@ -153,5 +161,25 @@ def test_apply_xunity_keeps_original_when_target_empty(tmp_path):
     results = [TranslationResult(main_file, "hello", "hello", "")]
     apply_xunity(results, out_dir)
 
-    written = (out_dir / "main.txt").read_text(encoding="utf-8")
+    written = (out_dir / "vi" / "Text" / "main.txt").read_text(encoding="utf-8")
     assert "hello=existing" in written
+
+
+def test_apply_xunity_preserves_relative_paths_to_avoid_collisions(tmp_path):
+    vi_dir = tmp_path / "Translation" / "vi" / "Text"
+    en_dir = tmp_path / "Translation" / "en" / "Text"
+    vi_dir.mkdir(parents=True)
+    en_dir.mkdir(parents=True)
+    vi_file = vi_dir / "main.txt"
+    en_file = en_dir / "main.txt"
+    vi_file.write_text("hello=\n", encoding="utf-8")
+    en_file.write_text("hello=\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    apply_xunity([
+        TranslationResult(vi_file, "hello", "hello", "xin chào"),
+        TranslationResult(en_file, "hello", "hello", "hello there"),
+    ], out_dir)
+
+    assert (out_dir / "vi" / "Text" / "main.txt").read_text(encoding="utf-8") == "hello=xin chào\n"
+    assert (out_dir / "en" / "Text" / "main.txt").read_text(encoding="utf-8") == "hello=hello there\n"
