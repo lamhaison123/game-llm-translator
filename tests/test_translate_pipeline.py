@@ -88,3 +88,75 @@ def test_provider_set_glossary_none_becomes_empty():
     provider = _MockProvider([])
     provider.set_glossary("")
     assert provider.glossary_block == ""
+
+
+# ---------------------------------------------------------------------------
+# Pre-dedup fan-out logic (extracted from gui._translate_entries)
+# ---------------------------------------------------------------------------
+
+
+def _fanout(batch_results, source_groups):
+    """Standalone copy of the fan-out logic for testing without Tk."""
+    expanded = []
+    for r in batch_results:
+        siblings = source_groups.get(r.source, [])
+        for e in siblings:
+            expanded.append(TranslationResult(e.file, e.key, e.source, r.target, e.context))
+        if not siblings:
+            expanded.append(r)
+    return expanded
+
+
+def test_fanout_expands_unique_result_to_all_siblings():
+    e1 = TextEntry(Path("Map001.json"), "$.k1", "Hello")
+    e2 = TextEntry(Path("Map002.json"), "$.k1", "Hello")
+    e3 = TextEntry(Path("Map003.json"), "$.k1", "Hello")
+    source_groups = {"Hello": [e1, e2, e3]}
+    batch_results = [TranslationResult(Path("Map001.json"), "$.k1", "Hello", "Xin chào")]
+
+    expanded = _fanout(batch_results, source_groups)
+
+    assert len(expanded) == 3
+    assert {(r.file, r.key) for r in expanded} == {
+        (Path("Map001.json"), "$.k1"),
+        (Path("Map002.json"), "$.k1"),
+        (Path("Map003.json"), "$.k1"),
+    }
+    assert all(r.target == "Xin chào" for r in expanded)
+
+
+def test_fanout_handles_unknown_source_passthrough():
+    """If a result's source isn't in source_groups, keep the result unchanged."""
+    e = TextEntry(Path("a.json"), "$.k", "Hi")
+    source_groups: dict = {"Hi": [e]}
+    extra = TranslationResult(Path("z.json"), "$.x", "Surprise", "Bất ngờ")
+    batch_results = [
+        TranslationResult(Path("a.json"), "$.k", "Hi", "Chào"),
+        extra,
+    ]
+
+    expanded = _fanout(batch_results, source_groups)
+
+    assert len(expanded) == 2
+    assert any(r.source == "Surprise" and r.target == "Bất ngờ" for r in expanded)
+
+
+def test_fanout_empty_results_returns_empty():
+    assert _fanout([], {"x": []}) == []
+
+
+def test_source_groups_dedup_count():
+    """Verify the dedup math used in _translate_entries."""
+    entries = [
+        TextEntry(Path("a.json"), "$.k1", "Hello"),
+        TextEntry(Path("b.json"), "$.k1", "Hello"),
+        TextEntry(Path("c.json"), "$.k1", "World"),
+    ]
+    groups: dict = {}
+    for e in entries:
+        groups.setdefault(e.source, []).append(e)
+    unique = [g[0] for g in groups.values()]
+
+    assert len(unique) == 2
+    assert len(entries) - len(unique) == 1
+    assert {u.source for u in unique} == {"Hello", "World"}

@@ -701,13 +701,14 @@ class TranslatorGUI(tk.Tk):
                     self._log(f"Batch failed after retries (will retry at end): {exc}")
                     failed_batches.append(batch)
                     with results_lock:
-                        translated_count += len(batch)
+                        deferred_entry_count = sum(len(source_groups.get(e.source, [e])) for e in batch)
+                        translated_count += deferred_entry_count
                         self._log(f"Translated {min(translated_count, len(entries))}/{len(entries)} ({len(failed_batches)} batch(es) deferred)")
                         self._ui_call(lambda d=min(translated_count, len(entries)), t=len(entries): self._update_translate_progress(d, t))
                     continue
                 with results_lock:
-                    translated_count += len(batch)
                     expanded = _fanout_results(batch_results)
+                    translated_count += len(expanded)
                     results.extend(expanded)
                     results = self._dedupe_results(results, wanted_ids)
                     save_results(results, translations_csv)
