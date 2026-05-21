@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from .app_config import load_app_config, save_app_config
-from .app_logging import log_event, logs_dir
+from .app_logging import is_api_logging_enabled, log_event, logs_dir, set_api_logging
 from .auto import analyze_game, auto_translate_game, write_analysis_report
 from .csv_store import load_entries, load_results, save_results
 from .editor import open_file_editor
@@ -321,6 +321,12 @@ class TranslatorGUI(QMainWindow):
         self.remember_api_check.setChecked(bool(self.config.get("remember_api_key", bool(self.config.get("api_key")))))
         form.addRow("", self.remember_api_check)
 
+        self.log_api_check = QCheckBox("Log full API requests & responses (api-debug.log) — debug only, may contain sensitive data")
+        self.log_api_check.setChecked(bool(self.config.get("log_api_calls", False)))
+        self.log_api_check.toggled.connect(self._on_api_logging_toggled)
+        set_api_logging(self.log_api_check.isChecked())
+        form.addRow("", self.log_api_check)
+
         self.provider_note = QLabel("")
         self.provider_note.setWordWrap(True)
         self.provider_note.setStyleSheet("color: #666;")
@@ -329,6 +335,9 @@ class TranslatorGUI(QMainWindow):
         save_btn = QPushButton("Save provider settings")
         save_btn.clicked.connect(self.save_settings)
         form.addRow("", save_btn)
+
+        open_api_log_btn = self._safe_button("Open API Debug Log", self._open_api_log)
+        form.addRow("", open_api_log_btn)
 
         return tab
 
@@ -594,6 +603,7 @@ class TranslatorGUI(QMainWindow):
             "glossary_path": self.glossary_path_edit.text(),
             "theme": getattr(self, "theme_mode", "light"),
             "remember_api_key": self.remember_api_check.isChecked(),
+            "log_api_calls": self.log_api_check.isChecked(),
             "reuse_memory": self.reuse_memory_check.isChecked(),
             "save_memory": self.save_memory_check.isChecked(),
         }
@@ -774,6 +784,19 @@ class TranslatorGUI(QMainWindow):
         path = logs_dir()
         path.mkdir(parents=True, exist_ok=True)
         open_file_editor(path)
+
+    def _on_api_logging_toggled(self, enabled: bool) -> None:
+        set_api_logging(enabled)
+        state = "enabled" if enabled else "disabled"
+        self._log(f"API call logging {state}")
+
+    def _open_api_log(self) -> None:
+        from .app_logging import api_log_file_path
+        path = api_log_file_path()
+        if path.exists():
+            open_file_editor(path)
+        else:
+            self.signals.info.emit("API Debug Log", f"No API debug log yet for today.\nIt will be created at:\n{path}")
 
     # ------------------------------------------------------------------
     # Backup management

@@ -9,6 +9,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.parse import quote_plus
+from .app_logging import log_api_call, log_event
 
 import requests
 
@@ -462,13 +463,16 @@ class AnthropicProvider(LLMProvider):
         self._check_stop()
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
         max_tokens = min(_estimate_output_tokens(entries), 8192)
+        user_prompt = _user_prompt(entries, target_lang, source_lang)
+        log_api_call("anthropic", "REQUEST", user_prompt, entry_count=len(entries))
         message = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": _user_prompt(entries, target_lang, source_lang)}],
+            messages=[{"role": "user", "content": user_prompt}],
         )
         text = _anthropic_message_text(message)
+        log_api_call("anthropic", "RESPONSE", text, entry_count=len(entries))
         if getattr(message, "stop_reason", None) == "max_tokens":
             raise ValueError("Anthropic response truncated (max_tokens); retry with smaller batch")
         results, _stats = _results_from_json(entries, text)
@@ -510,12 +514,14 @@ class OpenAIProvider(LLMProvider):
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         self._check_stop()
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
+        user_prompt = _user_prompt(entries, target_lang, source_lang)
+        log_api_call("openai", "REQUEST", user_prompt, entry_count=len(entries))
         response = self.client.chat.completions.create(
             model=self.model,
             temperature=0.2,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": _user_prompt(entries, target_lang, source_lang)},
+                {"role": "user", "content": user_prompt},
             ],
         )
         try:
@@ -525,7 +531,9 @@ class OpenAIProvider(LLMProvider):
                 raw = response.model_dump_json() if hasattr(response, "model_dump_json") else str(response)
             except Exception:
                 raw = str(response)
+            log_api_call("openai", "RESPONSE_ERROR", raw[:2000], entry_count=len(entries))
             raise ValueError(f"{exc} | raw={raw[:500]}") from exc
+        log_api_call("openai", "RESPONSE", text, entry_count=len(entries))
         choices = getattr(response, "choices", None) or []
         if choices:
             choice = choices[0]
