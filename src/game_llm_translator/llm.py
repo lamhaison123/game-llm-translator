@@ -417,6 +417,9 @@ def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
+        # Skip thinking blocks (Claude extended thinking)
+        if content.get("type") in ("thinking", "redacted_thinking"):
+            return ""
         if content.get("type") == "text" and content.get("text") is not None:
             return str(content["text"])
         if content.get("content") is not None:
@@ -424,7 +427,11 @@ def _content_text(content: Any) -> str:
         return ""
     if isinstance(content, list):
         return "".join(_content_text(item) for item in content)
-    if getattr(content, "type", None) == "text" and getattr(content, "text", None) is not None:
+    # Object with .type attribute
+    block_type = getattr(content, "type", None)
+    if block_type in ("thinking", "redacted_thinking"):
+        return ""
+    if block_type == "text" and getattr(content, "text", None) is not None:
         return str(getattr(content, "text"))
     if getattr(content, "content", None) is not None:
         return _content_text(getattr(content, "content"))
@@ -444,8 +451,11 @@ def _anthropic_message_text(message: Any) -> str:
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, model: str, api_key: str | None = None):
-        self.client = Anthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
+    def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
+        kwargs: dict[str, Any] = {"api_key": api_key or os.getenv("ANTHROPIC_API_KEY")}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = Anthropic(**kwargs)
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
@@ -530,6 +540,12 @@ def make_provider(provider: str, model: str, api_key: str | None = None, api_bas
     provider = provider.strip().lower()
     if provider == "anthropic":
         return AnthropicProvider(model, api_key)
+    if provider in {"anthropic-compatible", "anthropic compatible", "custom-anthropic"}:
+        return AnthropicProvider(
+            model,
+            api_key or os.getenv("ANTHROPIC_COMPATIBLE_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
+            api_base or os.getenv("ANTHROPIC_COMPATIBLE_BASE_URL"),
+        )
     if provider == "openai":
         return OpenAIProvider(model, api_key, api_base)
     if provider in {"openai-compatible", "openai compatible", "compatible", "custom-openai", "openrouter", "lmstudio", "ollama"}:

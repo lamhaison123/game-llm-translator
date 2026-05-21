@@ -53,9 +53,10 @@ class TranslateReport:
 
 
 def _log(options: TranslateOptions, message: str) -> None:
-    log_event(message)
     if options.on_log:
         options.on_log(message)
+    else:
+        log_event(message)
 
 
 STOPPED = "Stopped by user"

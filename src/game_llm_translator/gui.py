@@ -101,6 +101,7 @@ class TranslatorGUI(QMainWindow):
         self.stop_requested = threading.Event()
         self.current_worker: threading.Thread | None = None
         self.action_buttons: list[QPushButton] = []
+        self.safe_buttons: list[QPushButton] = []
         self.backup_paths: list[Path] = []
         self.translate_progress: dict[str, float | int] = {"done": 0, "total": 0, "started": 0.0}
 
@@ -240,6 +241,13 @@ class TranslatorGUI(QMainWindow):
         self.action_buttons.append(btn)
         return btn
 
+    def _safe_button(self, text: str, slot: Callable[[], None]) -> QPushButton:
+        """Button that stays enabled even while a task is running (view/log only)."""
+        btn = QPushButton(text)
+        btn.clicked.connect(slot)
+        self.safe_buttons.append(btn)
+        return btn
+
     # ----- Game tab -----
 
     def _build_game_tab(self) -> QWidget:
@@ -288,7 +296,7 @@ class TranslatorGUI(QMainWindow):
         form = QFormLayout(tab)
 
         self.provider_combo = QComboBox()
-        self.provider_combo.addItems(["google", "mymemory", "libretranslate", "bing", "yandex", "anthropic", "openai", "openai-compatible"])
+        self.provider_combo.addItems(["google", "mymemory", "libretranslate", "bing", "yandex", "anthropic", "anthropic-compatible", "openai", "openai-compatible"])
         self.provider_combo.setCurrentText(str(self.config.get("provider", "google")))
         self.provider_combo.currentTextChanged.connect(lambda _: self._update_api_fields())
         form.addRow("Provider", self.provider_combo)
@@ -335,6 +343,7 @@ class TranslatorGUI(QMainWindow):
             "anthropic": "Uses Anthropic Claude. Keep API keys private.",
             "openai": "Uses OpenAI chat completions. Keep API keys private.",
             "openai-compatible": "OpenRouter / LM Studio / Ollama / proxy. Set Base URL.",
+            "anthropic-compatible": "Custom Anthropic Messages API endpoint (AWS Bedrock gateway, Vertex AI Claude proxy, etc). Set Base URL and API Key.",
         }
         self.provider_note.setText(notes.get(provider, ""))
 
@@ -455,9 +464,9 @@ class TranslatorGUI(QMainWindow):
 
         backup_group = QGroupBox("Backup actions")
         b = QHBoxLayout(backup_group)
-        b.addWidget(self._action_button("Refresh", self.refresh_backups))
+        b.addWidget(self._safe_button("Refresh", self.refresh_backups))
         b.addWidget(self._action_button("Create Backup", self.create_backup_now))
-        b.addWidget(self._action_button("Open Selected", self.open_selected_backup))
+        b.addWidget(self._safe_button("Open Selected", self.open_selected_backup))
         b.addWidget(self._action_button("Restore Selected", self.restore_backup))
         b.addWidget(self._action_button("Delete Selected", self.delete_selected_backups))
         b.addWidget(self._action_button("Delete All", self.delete_all_backups))
@@ -502,7 +511,7 @@ class TranslatorGUI(QMainWindow):
         tab = QWidget()
         outer = QVBoxLayout(tab)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(self._action_button("Open Log Folder", self.open_logs))
+        toolbar.addWidget(self._safe_button("Open Log Folder", self.open_logs))
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(lambda: self.log_view.clear())
         toolbar.addWidget(clear_btn)
@@ -518,7 +527,7 @@ class TranslatorGUI(QMainWindow):
         tab = QWidget()
         outer = QVBoxLayout(tab)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(self._action_button("Open Log Folder", self.open_logs))
+        toolbar.addWidget(self._safe_button("Open Log Folder", self.open_logs))
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(lambda: self.detail_log_view.clear())
         toolbar.addWidget(clear_btn)
@@ -711,6 +720,7 @@ class TranslatorGUI(QMainWindow):
     def _set_running_ui(self, running: bool, name: str = "") -> None:
         for btn in self.action_buttons:
             btn.setEnabled(not running)
+        # safe_buttons always stay enabled
         self.stop_button.setEnabled(running)
         self.status_label.setText(f"Running: {name}" if running else "Idle")
         self.progress_bar.setVisible(running)
