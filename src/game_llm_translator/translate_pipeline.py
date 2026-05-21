@@ -184,6 +184,12 @@ def translate_batch_with_retry(
                 while time.monotonic() < end:
                     _raise_if_stopped(options)
                     time.sleep(0.5)
+                if "524" in str(exc) and len(batch) > 1:
+                    mid = len(batch) // 2
+                    _log(options, f"524 timeout: splitting batch {len(batch)} -> {mid}+{len(batch)-mid} to reduce server load")
+                    left = translate_batch_with_retry(provider, batch[:mid], target_lang, source_lang, options, report)
+                    right = translate_batch_with_retry(provider, batch[mid:], target_lang, source_lang, options, report)
+                    return left + right
             else:
                 raise
     return []
