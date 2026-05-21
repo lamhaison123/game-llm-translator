@@ -54,7 +54,7 @@ from .rpg_maker import (
     extract_rpg_maker_mz,
     normalize_gui_game_type,
 )
-from .unity_setup import detect_unity_bare, install_xunity, uninstall_xunity, xunity_install_status, xunity_manifest_path
+from .unity_setup import detect_unity_bare, install_xunity, uninstall_xunity, xunity_install_status, xunity_manifest_path, resolve_xunity_lang, _write_xunity_config
 from .rpg_maker_cheat import (
     apply_cheat,
     cheat_manifest_path,
@@ -469,6 +469,7 @@ class TranslatorGUI(QMainWindow):
         xu.addWidget(self.xunity_status_label)
         xu_row = QHBoxLayout()
         xu_row.addWidget(self._action_button("Install BepInEx + XUnity...", self.install_xunity_plugin))
+        xu_row.addWidget(self._action_button("Fix Config / Language", self.fix_xunity_config))
         xu_row.addWidget(self._action_button("Uninstall XUnity", self.uninstall_xunity_plugin))
         xu_row.addWidget(self._action_button("Refresh", self.refresh_xunity_status))
         xu_row.addStretch()
@@ -1402,6 +1403,28 @@ class TranslatorGUI(QMainWindow):
             self._log(f"BepInEx {manifest.bepinex_tag} + XUnity {manifest.xunity_tag} installed ({len(manifest.files)} files)")
             self.signals.refresh_xunity.emit()
         self._run("install xunity", job)
+
+    def fix_xunity_config(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+        except Exception as exc:
+            QMessageBox.critical(self, "Fix XUnity Config", str(exc))
+            return
+        target_lang = self.target_lang_edit.text().strip() or "vi"
+        lang_code = resolve_xunity_lang(target_lang)
+        msg = (
+            f"Rewrite XUnity AutoTranslatorConfig.ini for:\n{game_dir}\n\n"
+            f"Target language: {target_lang} → ISO code: {lang_code}\n\n"
+            "This will overwrite the existing config. Run the game again after fixing."
+        )
+        if QMessageBox.question(self, "Fix XUnity Config", msg) != QMessageBox.StandardButton.Yes:
+            return
+
+        def job() -> None:
+            _write_xunity_config(game_dir, target_lang, progress=lambda m: self._log(m))
+            self._log(f"XUnity config fixed: Language={lang_code}")
+            self.signals.refresh_xunity.emit()
+        self._run("fix xunity config", job)
 
     def uninstall_xunity_plugin(self) -> None:
         try:

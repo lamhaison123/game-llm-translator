@@ -204,6 +204,34 @@ def test_tag_from_zip_name():
     assert _tag_from_zip_name("unknown.zip") == "bundled"
 
 
+def test_resolve_xunity_lang():
+    from game_llm_translator.unity_setup import resolve_xunity_lang
+    assert resolve_xunity_lang("Vietnamese") == "vi"
+    assert resolve_xunity_lang("vietnamese") == "vi"
+    assert resolve_xunity_lang("vi") == "vi"
+    assert resolve_xunity_lang("Chinese Simplified") == "zh-CN"
+    assert resolve_xunity_lang("Korean") == "ko"
+    assert resolve_xunity_lang("zh-TW") == "zh-TW"
+    assert resolve_xunity_lang("SomethingUnknown") == "SomethingUnknown"
+
+
+def test_write_xunity_config_lang_mapping(tmp_path):
+    from game_llm_translator.unity_setup import _write_xunity_config
+    _write_xunity_config(tmp_path, "Vietnamese")
+    cfg = (tmp_path / "BepInEx" / "config" / "AutoTranslatorConfig.ini").read_text()
+    assert "Language=vi" in cfg
+    assert "OutputUntranslatableText=True" in cfg
+    assert (tmp_path / "BepInEx" / "Translation" / "vi" / "Text").is_dir()
+
+
+def test_write_xunity_config_overwrites(tmp_path):
+    from game_llm_translator.unity_setup import _write_xunity_config
+    _write_xunity_config(tmp_path, "Vietnamese")
+    _write_xunity_config(tmp_path, "Korean")
+    cfg = (tmp_path / "BepInEx" / "config" / "AutoTranslatorConfig.ini").read_text()
+    assert "Language=ko" in cfg
+
+
 def test_install_xunity_raises_if_manifest_exists(tmp_path):
     (tmp_path / "UnityPlayer.dll").write_bytes(b"fake")
     manifest = XUnityManifest(1, "v1", "v1", "2026-01-01", str(tmp_path), [], [])
