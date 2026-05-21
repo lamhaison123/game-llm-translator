@@ -5,13 +5,13 @@ from pathlib import Path
 from collections import Counter
 import json
 import shutil
-import time
 
 from .app_logging import log_event
 from .csv_store import load_results, save_entries, save_results
 from .models import TextEntry, TranslationResult, text_identity
 from .translate_pipeline import TranslateOptions, dedupe_results, run_translate
 from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, extract_rpg_maker_detailed, is_supported_json_engine
+from .path_utils import timestamped_unique_path
 from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
@@ -194,7 +194,7 @@ def auto_translate_game(
             target_subdir = data_dir / (target_lang.lower()[:2] if target_lang else "vi") / "Text"
             target_subdir.mkdir(parents=True, exist_ok=True)
             if backup:
-                backup_dir = game_dir / f"translation_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+                backup_dir = timestamped_unique_path(game_dir, "translation_backup_")
                 shutil.copytree(data_dir, backup_dir)
                 manifest["backup_dir"] = str(backup_dir)
                 if progress:
@@ -209,7 +209,7 @@ def auto_translate_game(
             return target_subdir
         data_dir = _data_dir(game_dir)
         if backup:
-            backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+            backup_dir = timestamped_unique_path(game_dir, "data_backup_")
             shutil.copytree(data_dir, backup_dir)
             manifest["backup_dir"] = str(backup_dir)
             if progress:

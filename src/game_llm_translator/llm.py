@@ -7,7 +7,7 @@ import time
 from abc import ABC, abstractmethod
 import threading
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 from urllib.parse import quote_plus
 from .app_logging import log_api_call, log_event
 
@@ -565,7 +565,7 @@ def _chat_completion_text(response: Any) -> str:
 
 class OpenAIProvider(LLMProvider):
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
-        kwargs: dict[str, str] = {"api_key": api_key or os.getenv("OPENAI_API_KEY") or ""}
+        kwargs = cast(Any, {"api_key": api_key or os.getenv("OPENAI_API_KEY") or ""})
         selected_base_url = base_url or os.getenv("OPENAI_BASE_URL") or ""
         if selected_base_url:
             kwargs["base_url"] = selected_base_url

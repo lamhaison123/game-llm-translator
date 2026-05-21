@@ -67,21 +67,22 @@ def save_memory(path: Path, results: list[TranslationResult], target_lang: str, 
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(path) + ".lock", timeout=30)
     with lock:
-        rows: dict[tuple[str, str, str], dict[str, str]] = {}
+        rows: dict[tuple[str, str, str, str], dict[str, str]] = {}
         if path.exists():
             with path.open("r", newline="", encoding="utf-8-sig") as fp:
                 for row in csv.DictReader(fp):
                     source = row.get("source", "")
                     row_target = row.get("target_lang", "")
+                    row_source = row.get("source_lang", "auto") or "auto"
                     context = row.get("context", "")
                     if source and row_target:
-                        rows[(source, context, row_target.strip().lower())] = {name: row.get(name, "") for name in MEMORY_FIELDS}
+                        rows[(source, context, row_target.strip().lower(), row_source.strip().lower())] = {name: row.get(name, "") for name in MEMORY_FIELDS}
         updated_at = datetime.now(timezone.utc).isoformat()
         saved = 0
         for result in results:
             if not result.source.strip() or not result.target.strip() or result.target == result.source:
                 continue
-            key = (result.source, result.context, target_lang.strip().lower())
+            key = (result.source, result.context, target_lang.strip().lower(), (source_lang or "auto").strip().lower())
             rows[key] = {
                 "source": result.source,
                 "target": result.target,

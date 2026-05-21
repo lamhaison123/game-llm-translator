@@ -416,3 +416,35 @@ def test_apply_rpg_maker_preserves_nested_data_paths(tmp_path):
     assert not (out_dir / "NUI_SaveAppMainScreen.json").exists()
     data = json.loads(out_file.read_text(encoding="utf-8"))
     assert data["childrens"][0]["bindings"]["text"] == "Lưu?"
+
+
+def test_apply_rpg_maker_skips_stale_key_and_applies_valid_rows(tmp_path):
+    src = tmp_path / "data" / "Actors.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(ACTORS_JSON, encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    results = [
+        TranslationResult(file=src, key="$[1].missing", source="Old", target="Cũ"),
+        TranslationResult(file=src, key="$[1].name", source="Harold", target="Ha-rôn"),
+    ]
+
+    apply_rpg_maker(results, out_dir)
+
+    data = json.loads((out_dir / "Actors.json").read_text(encoding="utf-8"))
+    assert data[1]["name"] == "Ha-rôn"
+    assert "missing" not in data[1]
+
+
+def test_apply_rpg_maker_raises_before_writing_when_all_rows_invalid(tmp_path):
+    src = tmp_path / "data" / "Actors.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(ACTORS_JSON, encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    results = [TranslationResult(file=src, key="$[99].name", source="Ghost", target="Ma")]
+
+    with pytest.raises(ValueError, match="No valid translation rows"):
+        apply_rpg_maker(results, out_dir)
+
+    assert not (out_dir / "Actors.json").exists()

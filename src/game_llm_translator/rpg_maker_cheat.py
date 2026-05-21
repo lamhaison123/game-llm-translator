@@ -187,8 +187,9 @@ def _bundled_cheat_dir() -> Path:
     Otherwise they're at <repo>/vendor/cheat/ relative to the source tree.
     """
     import sys
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / "vendor" / "cheat"
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return Path(bundle_dir) / "vendor" / "cheat"
     return Path(__file__).resolve().parent.parent.parent / "vendor" / "cheat"
 
 

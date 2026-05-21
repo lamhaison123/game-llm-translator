@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 import typer
 from rich.console import Console
@@ -101,7 +101,7 @@ def scan(
     console.print_json(data=report)
     if report.get("unsupported_reason"):
         console.print(f"[yellow]{report['unsupported_reason']}[/yellow]")
-    for warning in report.get("extract_warnings", []):
+    for warning in cast(list[Any], report.get("extract_warnings", [])):
         console.print(f"[yellow]WARN[/yellow] {warning}")
     if out:
         write_analysis_report(report, out)
@@ -140,10 +140,15 @@ def _translate_with_resume(
     use_memory: bool = True,
     memory: Path | None = None,
     glossary: Path | None = None,
+    correction_table: Path | None = None,
     workers: int = 1,
 ):
     settings = load_settings(provider, model, batch_size or 30)
     memory_paths = [memory] if memory else None
+    def on_log(msg: str) -> None:
+        console.print(msg)
+        log_event(msg)
+
     options = TranslateOptions(
         target_lang=target_lang,
         source_lang=source_lang,
@@ -156,7 +161,8 @@ def _translate_with_resume(
         use_memory=use_memory,
         memory_paths=memory_paths,
         glossary_path=glossary,
-        on_log=lambda msg: (console.print(msg), log_event(msg)),
+        correction_table_path=correction_table,
+        on_log=on_log,
     )
     results, report = run_translate(entries, out, options)
     console.print(
@@ -179,6 +185,7 @@ def translate(
     no_memory: bool = typer.Option(False, "--no-memory", help="Disable translation memory reuse/save."),
     memory: Path | None = typer.Option(None, "--memory", help="Extra translation memory CSV."),
     glossary: Path | None = typer.Option(None, "--glossary", help="Glossary CSV (term, translation columns)."),
+    correction_table: Path | None = typer.Option(None, "--correction-table", help="Correction table CSV (find, replace columns). Applied after each batch."),
     batch_size: int = typer.Option(30, "--batch-size"),
     workers: int = typer.Option(1, "--workers", min=1, max=8, help="Parallel translation workers."),
 ):
@@ -186,7 +193,7 @@ def translate(
     entries = load_entries(input_csv)
     results = _translate_with_resume(
         entries, out, target_lang, source_lang, provider, model, batch_size, api_key, api_base,
-        not no_memory, memory, glossary, workers,
+        not no_memory, memory, glossary, correction_table, workers,
     )
     console.print(f"Translated {len(results)} entries -> {out}")
 

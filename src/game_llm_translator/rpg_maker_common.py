@@ -320,7 +320,19 @@ def _set_json_value(data: Any, path: str, value: str) -> None:
     parts = _parse_path(path)
     for part in parts[:-1]:
         ref = ref[part]
-    ref[parts[-1]] = value
+    final = parts[-1]
+    if isinstance(ref, dict) and final not in ref:
+        raise KeyError(final)
+    ref[final] = value
+
+
+def _try_set_json_value(data: Any, path: str, value: str) -> str | None:
+    """Set a JSON value, returning a warning string instead of raising for stale paths."""
+    try:
+        _set_json_value(data, path, value)
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        return f"Invalid translation key {path!r}: {exc}"
+    return None
 
 
 def _source_data_root(source_file: Path) -> Path | None:
@@ -360,8 +372,22 @@ def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
         targets[resolved] = file
     for file, file_results in grouped.items():
         data = json.loads(file.read_text(encoding="utf-8-sig"))
+        invalid_rows: list[str] = []
+        applied = 0
         for result in file_results:
-            _set_json_value(data, result.key, result.target)
+            warning = _try_set_json_value(data, result.key, result.target)
+            if warning is not None:
+                invalid_rows.append(warning)
+                continue
+            applied += 1
+        if invalid_rows:
+            for warning in invalid_rows:
+                log_event(f"WARN {file.name}: {warning}", level="WARN")
+        if applied == 0 and invalid_rows:
+            details = "; ".join(invalid_rows[:5])
+            if len(invalid_rows) > 5:
+                details += f"; ...and {len(invalid_rows) - 5} more"
+            raise ValueError(f"No valid translation rows for {file}: {details}")
         target = _apply_output_path(file, output_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

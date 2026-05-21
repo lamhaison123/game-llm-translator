@@ -196,6 +196,7 @@ def translate_batch_with_retry(
     source_lang: str | None,
     options: TranslateOptions,
     report: TranslateReport,
+    report_lock: threading.Lock | None = None,
 ) -> list[TranslationResult]:
     for attempt in range(4):
         _raise_if_stopped(options)
@@ -206,7 +207,11 @@ def translate_batch_with_retry(
                 raise
             retryable, suggested = is_retryable(exc)
             if retryable and attempt < 3:
-                report.batches_retried += 1
+                if report_lock is None:
+                    report.batches_retried += 1
+                else:
+                    with report_lock:
+                        report.batches_retried += 1
                 delay = max(suggested, 5.0 * 2 ** attempt)
                 _log(options, f"Batch error (retry {attempt + 1}/3 in {delay:.0f}s): {exc}")
                 end = time.monotonic() + delay
@@ -216,18 +221,26 @@ def translate_batch_with_retry(
                 if "524" in str(exc) and len(batch) > 1:
                     mid = len(batch) // 2
                     _log(options, f"524 timeout: splitting batch {len(batch)} -> {mid}+{len(batch)-mid} to reduce server load")
-                    left = translate_batch_with_retry(provider, batch[:mid], target_lang, source_lang, options, report)
-                    right = translate_batch_with_retry(provider, batch[mid:], target_lang, source_lang, options, report)
+                    left = translate_batch_with_retry(provider, batch[:mid], target_lang, source_lang, options, report, report_lock)
+                    right = translate_batch_with_retry(provider, batch[mid:], target_lang, source_lang, options, report, report_lock)
                     return left + right
             else:
                 raise
     return []
 
 
-def _make_provider(options: TranslateOptions) -> LLMProvider:
+def _make_provider(options: TranslateOptions, glossary_block: str = "") -> LLMProvider:
+    """Create a provider, optionally injecting a pre-built glossary block.
+
+    When *glossary_block* is non-empty it is used directly (avoids re-reading
+    the CSV on each worker thread).  When it is empty and a glossary_path is
+    set the file is loaded and formatted here.
+    """
     provider = make_provider(options.provider, options.model, options.api_key, options.api_base)
     provider.stop_event = options.stop_event
-    if options.glossary_path:
+    if glossary_block:
+        provider.set_glossary(glossary_block)
+    elif options.glossary_path:
         entries = load_glossary(options.glossary_path)
         if entries:
             provider.set_glossary(format_glossary_for_prompt(entries))
@@ -244,7 +257,14 @@ def run_translate(
     report = TranslateReport(total_entries=len(entries))
     wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
     _raise_if_stopped(options)
-    provider = _make_provider(options)
+    workers = max(1, min(8, options.workers))
+    glossary_block = ""
+    if options.glossary_path:
+        glossary_entries = load_glossary(options.glossary_path)
+        if glossary_entries:
+            glossary_block = format_glossary_for_prompt(glossary_entries)
+            _log(options, f"Glossary: {len(glossary_entries)} entries from {options.glossary_path}")
+    provider = _make_provider(options, glossary_block) if workers == 1 else None
     corrections = load_correction_table(options.correction_table_path)
     if corrections:
         _log(options, f"Correction table: {len(corrections)} rules from {options.correction_table_path}")
@@ -294,8 +314,8 @@ def run_translate(
         _log(options, f"Auto batch size: {size}")
 
     batches = build_char_batches(unique_entries, max_entries=size)
-    workers = max(1, min(8, options.workers))
     results_lock = threading.Lock()
+    report_lock = threading.Lock()
     translated_count = len(results)
     failed_batches: list[list[TextEntry]] = []
 
@@ -303,12 +323,14 @@ def run_translate(
         nonlocal translated_count, results
         if _stopped(options):
             return
+        batch_provider = provider if provider is not None else _make_provider(options, glossary_block)
         try:
-            batch_results = translate_batch_with_retry(provider, batch, options.target_lang, options.source_lang, options, report)
+            batch_results = translate_batch_with_retry(batch_provider, batch, options.target_lang, options.source_lang, options, report, report_lock)
         except Exception as exc:
             if _stopped(options):
                 raise RuntimeError(STOPPED) from exc
-            report.batches_failed += 1
+            with report_lock:
+                report.batches_failed += 1
             if _is_content_refusal(exc):
                 _log(options, f"WARN: LLM refused batch (content filter, fallback to source): {str(exc)[:120]}")
                 with results_lock:
@@ -319,7 +341,8 @@ def run_translate(
                     save_results(results, translations_csv)
             else:
                 _log(options, f"Batch failed (deferred): {exc}")
-                failed_batches.append(batch)
+                with results_lock:
+                    failed_batches.append(batch)
             with results_lock:
                 translated_count += sum(len(groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e])) for e in batch)
                 if on_progress:
@@ -341,7 +364,8 @@ def run_translate(
         for item in expanded:
             issues = translation_warnings(item.source, item.target)
             if issues:
-                report.placeholder_warnings += 1
+                with report_lock:
+                    report.placeholder_warnings += 1
                 _log(options, f"Quality warning {item.file.name}:{item.key}: {', '.join(issues)}")
         if _stopped(options):
             return
@@ -405,13 +429,20 @@ def run_translate(
 
             def retry_sub(sub: list[TextEntry]) -> None:
                 """Recursively split and retry until batch size == 1 or success."""
+                nonlocal results
                 if not sub or _stopped(options):
                     return
                 try:
-                    batch_results = translate_batch_with_retry(provider, sub, options.target_lang, options.source_lang, options, report)
+                    retry_provider = provider if provider is not None else _make_provider(options, glossary_block)
+                    batch_results = translate_batch_with_retry(retry_provider, sub, options.target_lang, options.source_lang, options, report, report_lock)
                     if _stopped(options):
                         _raise_if_stopped(options)
                     expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
+                    if corrections:
+                        expanded = [
+                            TranslationResult(r.file, r.key, r.source, apply_correction_table(r.target, corrections), r.context)
+                            for r in expanded
+                        ]
                     with results_lock:
                         results.extend(expanded)
                         results = dedupe_results(results, wanted_ids)

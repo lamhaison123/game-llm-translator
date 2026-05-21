@@ -7,11 +7,12 @@ import threading
 import time
 import concurrent.futures
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPalette, QTextCursor
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QPalette
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -19,11 +20,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -33,11 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSpinBox,
-    QSplitter,
-    QStatusBar,
-    QStyle,
     QTabWidget,
-    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -66,6 +61,7 @@ from .rpg_maker_cheat import (
     detect_cheat_engine,
     remove_cheat,
 )
+from .path_utils import timestamped_unique_path
 from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
@@ -84,8 +80,9 @@ class WorkerSignals(QObject):
 
 
 def _resource_dir(name: str) -> Path:
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / name
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return Path(bundle_dir) / name
     return Path(__file__).resolve().parent.parent.parent / name
 
 
@@ -142,23 +139,25 @@ class TranslatorGUI(QMainWindow):
         app = QApplication.instance()
         if app is None:
             return
+        qt_app = cast(QApplication, app)
         if mode == "dark":
+            role = QPalette.ColorRole
             palette = QPalette()
-            palette.setColor(QPalette.Window, QColor(45, 45, 48))
-            palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
-            palette.setColor(QPalette.Base, QColor(30, 30, 30))
-            palette.setColor(QPalette.AlternateBase, QColor(45, 45, 48))
-            palette.setColor(QPalette.Text, QColor(220, 220, 220))
-            palette.setColor(QPalette.Button, QColor(60, 60, 65))
-            palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
-            palette.setColor(QPalette.Highlight, QColor(91, 108, 255))
-            palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-            palette.setColor(QPalette.ToolTipBase, QColor(45, 45, 48))
-            palette.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
-            app.setPalette(palette)
+            palette.setColor(role.Window, QColor(45, 45, 48))
+            palette.setColor(role.WindowText, QColor(220, 220, 220))
+            palette.setColor(role.Base, QColor(30, 30, 30))
+            palette.setColor(role.AlternateBase, QColor(45, 45, 48))
+            palette.setColor(role.Text, QColor(220, 220, 220))
+            palette.setColor(role.Button, QColor(60, 60, 65))
+            palette.setColor(role.ButtonText, QColor(220, 220, 220))
+            palette.setColor(role.Highlight, QColor(91, 108, 255))
+            palette.setColor(role.HighlightedText, QColor(255, 255, 255))
+            palette.setColor(role.ToolTipBase, QColor(45, 45, 48))
+            palette.setColor(role.ToolTipText, QColor(220, 220, 220))
+            qt_app.setPalette(palette)
             self.theme_mode = "dark"
         else:
-            app.setPalette(app.style().standardPalette())
+            qt_app.setPalette(qt_app.style().standardPalette())
             self.theme_mode = "light"
 
     def _toggle_theme(self) -> None:
@@ -306,7 +305,7 @@ class TranslatorGUI(QMainWindow):
         form.addRow("Model", self.model_edit)
 
         self.api_key_edit = QLineEdit(str(self.config.get("api_key", "")))
-        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         form.addRow("API key", self.api_key_edit)
 
         self.api_base_edit = QLineEdit(str(self.config.get("api_base", "")))
@@ -385,6 +384,9 @@ class TranslatorGUI(QMainWindow):
         self.glossary_path_edit = QLineEdit(str(self.config.get("glossary_path", "")))
         adv.addRow("Glossary CSV (optional)", self._path_picker(self.glossary_path_edit, self._choose_glossary))
 
+        self.correction_table_path_edit = QLineEdit(str(self.config.get("correction_table_path", "")))
+        adv.addRow("Correction table CSV (optional)", self._path_picker(self.correction_table_path_edit, self._choose_correction_table))
+
         self.restart_check = QCheckBox("Ignore existing translations and start over")
         adv.addRow("", self.restart_check)
 
@@ -396,7 +398,10 @@ class TranslatorGUI(QMainWindow):
         self.save_memory_check.setChecked(bool(self.config.get("save_memory", True)))
         adv.addRow("", self.save_memory_check)
 
-        hint = QLabel("Glossary CSV columns: term, translation, [note]. Terms here will be translated EXACTLY as listed in every batch.")
+        hint = QLabel(
+            "Glossary CSV columns: term, translation, [note]. Terms are injected into every LLM prompt.\n"
+            "Correction table CSV columns: find, replace. Applied as post-processing after each batch."
+        )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #555;")
         adv.addRow("", hint)
@@ -493,8 +498,8 @@ class TranslatorGUI(QMainWindow):
 
         self.backups_tree = QTreeWidget()
         self.backups_tree.setHeaderLabels(["Backup type", "Path"])
-        self.backups_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
-        self.backups_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.backups_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.backups_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         outer.addWidget(self.backups_tree, 1)
 
         info = QLabel("Restore creates data_before_restore_* first. Delete only removes listed backup folders; game data is not changed.")
@@ -510,7 +515,7 @@ class TranslatorGUI(QMainWindow):
         t.setHeaderLabels(columns)
         t.setRootIsDecorated(False)
         t.setAlternatingRowColors(True)
-        t.setSelectionMode(QTreeWidget.ExtendedSelection)
+        t.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         t.setSortingEnabled(False)
         t.header().setStretchLastSection(True)
         mono = QFont("Consolas", 8)
@@ -637,6 +642,11 @@ class TranslatorGUI(QMainWindow):
         if value:
             self.glossary_path_edit.setText(value)
 
+    def _choose_correction_table(self) -> None:
+        value, _ = QFileDialog.getOpenFileName(self, "Select correction table CSV", self.correction_table_path_edit.text(), "CSV files (*.csv);;All files (*)")
+        if value:
+            self.correction_table_path_edit.setText(value)
+
     def _set_default_work_paths(self, game_dir: Path) -> None:
         work = game_dir / "translator_work"
         self.texts_csv_edit.setText(str(work / "texts.csv"))
@@ -672,6 +682,7 @@ class TranslatorGUI(QMainWindow):
             "batch_size": int(self.batch_size_spin.value()),
             "workers": int(self.workers_spin.value()),
             "glossary_path": self.glossary_path_edit.text(),
+            "correction_table_path": self.correction_table_path_edit.text(),
             "theme": getattr(self, "theme_mode", "light"),
             "remember_api_key": self.remember_api_check.isChecked(),
             "log_api_calls": self.log_api_check.isChecked(),
@@ -927,11 +938,11 @@ class TranslatorGUI(QMainWindow):
         try:
             game_dir = self._game_dir_path()
             data_dir = self._game_data_dir(game_dir)
-            backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+            backup_dir = timestamped_unique_path(game_dir, "data_backup_")
         except Exception as exc:
             QMessageBox.critical(self, "Create Backup", str(exc))
             return
-        if QMessageBox.question(self, "Create Backup", f"Create backup now?\n\nFrom: {data_dir}\nTo: {backup_dir}") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Create Backup", f"Create backup now?\n\nFrom: {data_dir}\nTo: {backup_dir}") != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
@@ -973,7 +984,7 @@ class TranslatorGUI(QMainWindow):
             QMessageBox.critical(self, "Delete Backups", str(exc))
             return
         msg = f"Permanently delete {len(paths)} selected backup folder(s)?\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?"
-        if QMessageBox.question(self, "Delete Backups", msg) != QMessageBox.Yes:
+        if QMessageBox.question(self, "Delete Backups", msg) != QMessageBox.StandardButton.Yes:
             return
         self._delete_backup_paths(game_dir, paths)
 
@@ -988,7 +999,7 @@ class TranslatorGUI(QMainWindow):
             QMessageBox.information(self, "Delete All Backups", "No backup folders found.")
             return
         msg = f"Permanently delete all {len(paths)} backup folder(s)?\n\n{self._backup_preview(paths)}\n\nGame data is not changed. Continue?"
-        if QMessageBox.question(self, "Delete All Backups", msg) != QMessageBox.Yes:
+        if QMessageBox.question(self, "Delete All Backups", msg) != QMessageBox.StandardButton.Yes:
             return
         self._delete_backup_paths(game_dir, paths)
 
@@ -1000,11 +1011,11 @@ class TranslatorGUI(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Restore Backup", str(exc))
             return
-        if QMessageBox.question(self, "Restore Backup", f"Restore from {backup_dir} to {data_dir}?\nA safety copy will be created first.") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Restore Backup", f"Restore from {backup_dir} to {data_dir}?\nA safety copy will be created first.") != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
-            safety = game_dir / f"data_before_restore_{time.strftime('%Y%m%d_%H%M%S')}"
+            safety = timestamped_unique_path(game_dir, "data_before_restore_")
             shutil.copytree(data_dir, safety)
             self._log(f"Safety copy -> {safety}")
             for f in backup_dir.rglob("*.json"):
@@ -1028,7 +1039,7 @@ class TranslatorGUI(QMainWindow):
         preview = "\n".join(str(p) for p in existing[:12])
         if len(existing) > 12:
             preview += f"\n...and {len(existing) - 12} more"
-        if QMessageBox.question(self, "Clear Old Translation", f"Delete generated translation files?\n\n{preview}") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Clear Old Translation", f"Delete generated translation files?\n\n{preview}") != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
@@ -1051,7 +1062,7 @@ class TranslatorGUI(QMainWindow):
         if not path.exists():
             QMessageBox.information(self, "Clear Game Memory", f"No game memory file found:\n{path}")
             return
-        if QMessageBox.question(self, "Clear Game Memory", f"Delete per-game memory?\n\n{path}\n\nGlobal memory not affected.") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Clear Game Memory", f"Delete per-game memory?\n\n{path}\n\nGlobal memory not affected.") != QMessageBox.StandardButton.Yes:
             return
         try:
             path.unlink()
@@ -1071,7 +1082,7 @@ class TranslatorGUI(QMainWindow):
         except Exception:
             count = -1
         cs = f"{count} entries" if count >= 0 else "unknown"
-        if QMessageBox.question(self, "Clear Global Memory", f"Delete global memory ({cs})?\n\n{path}\n\nThis affects ALL games.") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Clear Global Memory", f"Delete global memory ({cs})?\n\n{path}\n\nThis affects ALL games.") != QMessageBox.StandardButton.Yes:
             return
         try:
             path.unlink()
@@ -1101,15 +1112,6 @@ class TranslatorGUI(QMainWindow):
                 by_id[ident] = r
         return list(by_id.values())
 
-    @staticmethod
-    def _estimate_batch_size(entries: list[TextEntry], target_tokens: int = 8000) -> int:
-        if not entries:
-            return 30
-        sample = entries[:min(20, len(entries))]
-        avg_chars = sum(len(e.source) + len(e.context_text) for e in sample) / len(sample)
-        avg_tokens = max(1, avg_chars / 3.5)
-        return min(max(1, int(target_tokens / avg_tokens)), 60)
-
     def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
         gp = self.glossary_path_edit.text().strip()
         options = TranslateOptions(
@@ -1124,6 +1126,7 @@ class TranslatorGUI(QMainWindow):
             use_memory=self.reuse_memory_check.isChecked(),
             save_memory=self.save_memory_check.isChecked(),
             glossary_path=Path(gp) if gp else None,
+            correction_table_path=Path(cp) if (cp := self.correction_table_path_edit.text().strip()) else None,
             restart=self.restart_check.isChecked(),
             on_log=self._log,
             stop_event=self.stop_requested,
@@ -1160,7 +1163,7 @@ class TranslatorGUI(QMainWindow):
                 summary += f" | NOT SUPPORTED: {report['unsupported_reason']}"
             self.signals.set_text.emit("scan_summary", summary)
             self._log(summary)
-            for warning in report.get("extract_warnings", []):
+            for warning in cast(list[str], report.get("extract_warnings", [])):
                 self._log(f"WARN: {warning}")
             self.signals.refresh_backups.emit()
             self.signals.refresh_cheat.emit()
@@ -1229,18 +1232,18 @@ class TranslatorGUI(QMainWindow):
                 data_dir = detect_xunity(game_dir)
                 if data_dir is None:
                     raise ValueError(f"XUnity Translation folder not found: {game_dir}")
-                backup_dir = game_dir / f"translation_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+                backup_dir = timestamped_unique_path(game_dir, "translation_backup_")
                 file_glob = "*.txt"
                 label = "Translation TXT files"
             else:
                 data_dir = self._game_data_dir(game_dir)
-                backup_dir = game_dir / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+                backup_dir = timestamped_unique_path(game_dir, "data_backup_")
                 file_glob = "*.json"
                 label = "RPG Maker JSON files"
         except Exception as exc:
             QMessageBox.critical(self, "Apply to Game", str(exc))
             return
-        if QMessageBox.question(self, "Apply to Game", f"This will create a backup, then replace {label}.\n\nFrom: {out_dir}\nTo: {data_dir}\nBackup: {backup_dir}\n\nClose game first. Continue?") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Apply to Game", f"This will create a backup, then replace {label}.\n\nFrom: {out_dir}\nTo: {data_dir}\nBackup: {backup_dir}\n\nClose game first. Continue?") != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
@@ -1289,7 +1292,7 @@ class TranslatorGUI(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Apply Cheat", str(exc))
             return
-        if QMessageBox.question(self, "Apply Cheat", f"Install cheat plugin to {game_dir}?\nEngine: {engine}") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Apply Cheat", f"Install cheat plugin to {game_dir}?\nEngine: {engine}") != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
@@ -1304,7 +1307,7 @@ class TranslatorGUI(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Remove Cheat", str(exc))
             return
-        if QMessageBox.question(self, "Remove Cheat", f"Remove cheat plugin from {game_dir}?") != QMessageBox.Yes:
+        if QMessageBox.question(self, "Remove Cheat", f"Remove cheat plugin from {game_dir}?") != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
@@ -1376,7 +1379,7 @@ class TranslationEditor(QDialog):
         # Tree
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["#", "File", "Key", "Source", "Target"])
-        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.itemSelectionChanged.connect(self._on_select)
@@ -1419,7 +1422,9 @@ class TranslationEditor(QDialog):
             self.rows = [dict(row) for row in csv.DictReader(fp)]
         self._apply_filter()
         if self.filtered_indices:
-            self.tree.setCurrentItem(self.tree.topLevelItem(0))
+            first_item = self.tree.topLevelItem(0)
+            if first_item is not None:
+                self.tree.setCurrentItem(first_item)
 
     def _is_fallback(self, row: dict[str, str]) -> bool:
         src = row.get("source", "").strip()
@@ -1444,7 +1449,7 @@ class TranslationEditor(QDialog):
             if search and search not in (row.get("source", "") + row.get("target", "") + row.get("key", "")).lower():
                 continue
             item = QTreeWidgetItem([str(i), row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")])
-            item.setData(0, Qt.UserRole, i)
+            item.setData(0, Qt.ItemDataRole.UserRole, i)
             if self._is_fallback(row):
                 for col in range(5):
                     item.setForeground(col, QColor(204, 68, 0))
@@ -1460,7 +1465,7 @@ class TranslationEditor(QDialog):
             return
         if self.current_index is not None:
             self._save_current(update_tree=True)
-        self.current_index = int(items[0].data(0, Qt.UserRole))
+        self.current_index = int(items[0].data(0, Qt.ItemDataRole.UserRole))
         row = self.rows[self.current_index]
         self.source_box.setPlainText(row.get("source", ""))
         self.target_box.setPlainText(row.get("target", ""))
@@ -1473,7 +1478,7 @@ class TranslationEditor(QDialog):
         if update_tree:
             for i in range(self.tree.topLevelItemCount()):
                 it = self.tree.topLevelItem(i)
-                if int(it.data(0, Qt.UserRole)) == self.current_index:
+                if it is not None and int(it.data(0, Qt.ItemDataRole.UserRole)) == self.current_index:
                     it.setText(4, row["target"])
                     color = QColor(204, 68, 0) if self._is_fallback(row) else self.tree.palette().text().color()
                     for c in range(5):

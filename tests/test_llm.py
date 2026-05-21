@@ -18,6 +18,7 @@ from game_llm_translator.llm import (
     _restore_protected_tokens,
     _results_from_json,
     _user_prompt,
+    _fix_token_formatting,
 )
 from game_llm_translator.models import TextEntry
 
@@ -346,3 +347,91 @@ def test_results_from_json_no_key_fallback_across_files():
     results, _ = _results_from_json(entries, response)
     assert results[0].target == "Harold"
     assert results[1].target == "Potion"
+
+
+# ---------------------------------------------------------------------------
+# _fix_token_formatting
+# ---------------------------------------------------------------------------
+
+def test_fix_token_formatting_bracket_with_spaces():
+    assert _fix_token_formatting(r"\N [1]") == r"\N[1]"
+    assert _fix_token_formatting(r"\V[ 2 ]") == r"\V[2]"
+    assert _fix_token_formatting(r"\C[  3  ]") == r"\C[3]"
+
+
+def test_fix_token_formatting_angle_bracket_with_spaces():
+    assert _fix_token_formatting(r"\n< text >") == r"\n<text>"
+
+
+def test_fix_token_formatting_percent_with_space():
+    assert _fix_token_formatting("% 1 damage") == "%1 damage"
+    assert _fix_token_formatting("%  2") == "%2"
+
+
+def test_fix_token_formatting_backslash_special_chars():
+    # LLM inserts a space after backslash: "\ !" → "\!"
+    assert _fix_token_formatting("\\ !") == "\\!"
+    assert _fix_token_formatting("\\ >") == "\\>"
+    assert _fix_token_formatting("\\ {") == "\\{"
+
+
+def test_fix_token_formatting_no_change_when_correct():
+    s = r"\N[1] and \V[2] deal %1 damage"
+    assert _fix_token_formatting(s) == s
+
+
+def test_fix_token_formatting_preserves_plain_text():
+    s = "Hello, world! 100% sure."
+    assert _fix_token_formatting(s) == s
+
+
+def test_fix_token_formatting_applied_in_results_from_json():
+    """_results_from_json must auto-fix token spacing via _fix_token_formatting."""
+    entries = [TextEntry(Path("a.json"), "$.k", r"\N[1] says hi")]
+    # LLM returned broken spacing
+    response = json.dumps([{"id": "a.json::$.k", "key": "$.k", "target": r"\N [1] says hi"}])
+    results, _ = _results_from_json(entries, response)
+    assert results[0].target == r"\N[1] says hi"
+
+
+# ---------------------------------------------------------------------------
+# glossary.load_correction_table / apply_correction_table
+# ---------------------------------------------------------------------------
+
+def test_load_correction_table_basic(tmp_path):
+    from game_llm_translator.glossary import load_correction_table, apply_correction_table
+    p = tmp_path / "ct.csv"
+    p.write_text("find,replace\nMP,Ma lực\nHP,Sinh lực\n", encoding="utf-8")
+    rules = load_correction_table(p)
+    assert rules == [("MP", "Ma lực"), ("HP", "Sinh lực")]
+
+
+def test_load_correction_table_missing_file(tmp_path):
+    from game_llm_translator.glossary import load_correction_table
+    assert load_correction_table(tmp_path / "nonexistent.csv") == []
+
+
+def test_load_correction_table_allows_empty_replace(tmp_path):
+    from game_llm_translator.glossary import load_correction_table
+    p = tmp_path / "ct.csv"
+    p.write_text("find,replace\nbadword,\n", encoding="utf-8")
+    rules = load_correction_table(p)
+    assert rules == [("badword", "")]
+
+
+def test_apply_correction_table_replaces_all_occurrences():
+    from game_llm_translator.glossary import apply_correction_table
+    rules = [("MP", "Ma lực"), ("HP", "Sinh lực")]
+    result = apply_correction_table("Mất 10 MP và 5 HP", rules)
+    assert result == "Mất 10 Ma lực và 5 Sinh lực"
+
+
+def test_apply_correction_table_empty_rules():
+    from game_llm_translator.glossary import apply_correction_table
+    assert apply_correction_table("unchanged text", []) == "unchanged text"
+
+
+def test_apply_correction_table_delete_term():
+    from game_llm_translator.glossary import apply_correction_table
+    rules = [("unwanted", "")]
+    assert apply_correction_table("remove unwanted word", rules) == "remove  word"

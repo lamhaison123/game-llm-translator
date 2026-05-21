@@ -164,3 +164,28 @@ def test_memory_distinguishes_context(tmp_path):
     mem = load_memory([path], "vietnamese")
     assert lookup_memory_value(mem, "Wait", "ui", "vietnamese", None) == "Đợi"
     assert lookup_memory_value(mem, "Wait", "dialogue", "vietnamese", None) == "Chờ"
+
+
+def test_save_memory_distinguishes_source_lang_for_same_source_and_target_lang(tmp_path):
+    path = tmp_path / "memory.csv"
+    save_memory(path, _make_results([("gift", "quà")]), "vietnamese", "english", "google")
+    save_memory(path, _make_results([("gift", "độc")]), "vietnamese", "german", "google")
+
+    mem_en = load_memory([path], "vietnamese", "english")
+    mem_de = load_memory([path], "vietnamese", "german")
+
+    assert lookup_memory_value(mem_en, "gift", "", "vietnamese", "english") == "quà"
+    assert lookup_memory_value(mem_de, "gift", "", "vietnamese", "german") == "độc"
+
+
+def test_load_memory_reads_legacy_file_without_source_lang_column(tmp_path):
+    path = tmp_path / "legacy_memory.csv"
+    path.write_text(
+        "source,target,target_lang,provider,context,updated_at\n"
+        "Hello,Xin chào,vietnamese,google,,2026-05-21T00:00:00+00:00\n",
+        encoding="utf-8",
+    )
+
+    mem = load_memory([path], "vietnamese", None)
+
+    assert lookup_memory_value(mem, "Hello", "", "vietnamese", None) == "Xin chào"
