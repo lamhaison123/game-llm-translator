@@ -67,7 +67,7 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
     raise ValueError(f"Unsupported language: {language!r}. Use a known name (e.g. Vietnamese) or ISO code (vi).")
 
 TOKEN_PATTERN = re.compile(
-    r"(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$|!><^\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|<[^<>]{1,120}>|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
+    r"(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}$!><^\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|<[^<>]{1,120}>|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
 )
 
 

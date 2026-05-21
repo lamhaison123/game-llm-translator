@@ -122,7 +122,22 @@ def fanout_results(
     return expanded
 
 
+_REFUSAL_PATTERNS = (
+    "我无法", "我不能", "无法给", "I cannot", "I'm unable", "I am unable",
+    "I can't", "I apologize", "content policy", "violates", "against my",
+    "as an ai", "as a language model",
+)
+
+
+def _is_content_refusal(exc: Exception) -> bool:
+    """Return True if the LLM refused to translate (content filter / safety response)."""
+    msg = str(exc).lower()
+    return any(p.lower() in msg for p in _REFUSAL_PATTERNS)
+
+
 def is_retryable(exc: Exception) -> tuple[bool, float]:
+    if _is_content_refusal(exc):
+        return False, 0.0
     msg = str(exc)
     if "retry_after" in msg:
         m = re.search(r"['\"]retry_after['\"]\s*:\s*(\d+(?:\.\d+)?)", msg)
@@ -256,8 +271,17 @@ def run_translate(
             if _stopped(options):
                 raise RuntimeError(STOPPED) from exc
             report.batches_failed += 1
-            _log(options, f"Batch failed (deferred): {exc}")
-            failed_batches.append(batch)
+            if _is_content_refusal(exc):
+                _log(options, f"WARN: LLM refused batch (content filter, fallback to source): {str(exc)[:120]}")
+                with results_lock:
+                    for e in batch:
+                        for entry in groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e]):
+                            results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
+                    results = dedupe_results(results, wanted_ids)
+                    save_results(results, translations_csv)
+            else:
+                _log(options, f"Batch failed (deferred): {exc}")
+                failed_batches.append(batch)
             with results_lock:
                 translated_count += sum(len(groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e])) for e in batch)
                 if on_progress:
@@ -353,6 +377,15 @@ def run_translate(
                 except Exception as exc:
                     if _is_stopped_error(exc):
                         raise
+                    if _is_content_refusal(exc):
+                        _log(options, f"WARN: LLM refused sub-batch {len(sub)} entries (content filter, fallback to source)")
+                        with results_lock:
+                            for e in sub:
+                                for entry in groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e]):
+                                    results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
+                            results = dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+                        return
                     if len(sub) > 1:
                         mid = len(sub) // 2
                         _log(options, f"Splitting failed batch ({len(sub)} -> {mid}+{len(sub)-mid}): {exc}")
