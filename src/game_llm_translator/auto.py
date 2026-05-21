@@ -149,7 +149,7 @@ def auto_translate_game(
         entries,
         translations_csv,
         options,
-        on_progress=lambda done, total: progress(f"Translated {done}/{total} entries") if progress else None,
+        on_progress=None,
     )
     if progress and translate_report.reused_memory:
         progress(f"Reused {translate_report.reused_memory} translations from memory")

@@ -14,6 +14,7 @@ from game_llm_translator.llm import (
     _parse_google_translate_response,
     _chat_completion_text,
     _anthropic_message_text,
+    _repair_invalid_escapes,
     _restore_protected_tokens,
     _results_from_json,
     _user_prompt,
@@ -163,6 +164,74 @@ def test_parse_translation_json_not_array_raises():
 def test_parse_translation_json_invalid_json_raises():
     with pytest.raises(Exception):
         _parse_translation_json("NOT JSON")
+
+
+# ---------------------------------------------------------------------------
+# _repair_invalid_escapes
+# ---------------------------------------------------------------------------
+
+def test_repair_invalid_escapes_backslash_N():
+    raw = r'[{"key": "k", "target": "Hi \N[1]!"}]'
+    repaired = _repair_invalid_escapes(raw)
+    data = json.loads(repaired)
+    assert data[0]["target"] == r"Hi \N[1]!"
+
+
+def test_repair_invalid_escapes_backslash_V():
+    raw = r'[{"key": "k", "target": "MP: \V[2]"}]'
+    repaired = _repair_invalid_escapes(raw)
+    data = json.loads(repaired)
+    assert data[0]["target"] == r"MP: \V[2]"
+
+
+def test_repair_invalid_escapes_backslash_C():
+    raw = r'[{"key": "k", "target": "\C[3]Đỏ\C[0]"}]'
+    repaired = _repair_invalid_escapes(raw)
+    data = json.loads(repaired)
+    assert data[0]["target"] == r"\C[3]Đỏ\C[0]"
+
+
+def test_repair_invalid_escapes_does_not_touch_valid_escapes():
+    raw = '[{"key": "k", "target": "line1\\nline2\\ttab"}]'
+    repaired = _repair_invalid_escapes(raw)
+    assert repaired == raw
+
+
+def test_repair_invalid_escapes_does_not_touch_double_backslash():
+    raw = r'[{"key": "k", "target": "path\\\\file"}]'
+    repaired = _repair_invalid_escapes(raw)
+    assert repaired == raw
+
+
+def test_repair_invalid_escapes_multiple_codes_in_one_string():
+    raw = r'[{"key": "k", "target": "\N[1] đánh \V[3] sát thương"}]'
+    repaired = _repair_invalid_escapes(raw)
+    data = json.loads(repaired)
+    assert r"\N[1]" in data[0]["target"]
+    assert r"\V[3]" in data[0]["target"]
+
+
+# _parse_translation_json auto-repair integration
+
+def test_parse_translation_json_auto_repairs_invalid_escape_backslash_N():
+    """Exact case from production log: LLM emits \\N[1] as bare \\N[1] in JSON."""
+    raw = r'[{"id": "Armors.json\u001f$[10].description", "key": "$[10].description", "target": "M\u00f3n qu\u00e0 Lisa t\u1eb7ng \N[1] m\u00e1t m\u1ebb."}]'
+    result, stats = _parse_translation_json(raw)
+    assert stats.parsed == 1
+    assert r"\N[1]" in result[0]["target"]
+
+
+def test_parse_translation_json_auto_repairs_multiple_rpg_codes():
+    raw = r'[{"key": "k", "target": "\C[1]Tấn công\C[0] gây \V[2] sát thương!"}]'
+    result, stats = _parse_translation_json(raw)
+    assert stats.parsed == 1
+    assert r"\C[1]" in result[0]["target"]
+    assert r"\V[2]" in result[0]["target"]
+
+
+def test_parse_translation_json_still_raises_on_truly_invalid_json():
+    with pytest.raises(ValueError, match="not valid JSON"):
+        _parse_translation_json('[{"key": "k", "target": BROKEN}')
 
 
 

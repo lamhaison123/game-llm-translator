@@ -90,7 +90,11 @@ def test_provider_set_glossary_none_becomes_empty():
     assert provider.glossary_block == ""
 
 
+import threading
+import time
+
 from game_llm_translator.translate_pipeline import (
+    STOPPED,
     build_source_groups,
     dedupe_group_key,
     fanout_results,
@@ -144,3 +148,43 @@ def test_run_translate_with_mock_provider(tmp_path):
     assert results[0].target == "VI:Hello"
     assert report.translated == 1
     assert out.exists()
+
+
+def test_run_translate_stop_event_aborts(tmp_path):
+    entries = [
+        TextEntry(Path("a.json"), "$.k1", "one"),
+        TextEntry(Path("a.json"), "$.k2", "two"),
+        TextEntry(Path("a.json"), "$.k3", "three"),
+    ]
+    out = tmp_path / "translations.csv"
+    stop = threading.Event()
+
+    class SlowProvider(_MockProvider):
+        def translate_batch(self, entries, target_lang, source_lang=None):
+            self.calls.append(list(entries))
+            stop.set()
+            time.sleep(0.05)
+            raise RuntimeError(STOPPED)
+
+    provider = SlowProvider([lambda s: f"VI:{s}"])
+    options = TranslateOptions(
+        target_lang="Vietnamese",
+        provider="google",
+        model="google",
+        batch_size=1,
+        use_memory=False,
+        save_memory=False,
+        stop_event=stop,
+    )
+
+    import game_llm_translator.translate_pipeline as tp
+
+    original = tp._make_provider
+    tp._make_provider = lambda _o: provider
+    try:
+        with pytest.raises(RuntimeError, match="Stopped by user"):
+            run_translate(entries, out, options)
+    finally:
+        tp._make_provider = original
+
+    assert len(provider.calls) >= 1

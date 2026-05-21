@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re as _re
 from pathlib import Path
 from typing import Any
 
@@ -70,8 +71,17 @@ def gui_game_type_to_engine(value: str | None) -> str:
     return "mz" if normalized == "rpg-maker-mz" else "mv"
 
 
+_ONLY_CONTROL_CODE_RE = _re.compile(
+    r'^[\s\\]*(?:\\[a-zA-Z]+\[\d+\][\s\\]*)+$'
+)
+
+
 def _is_text(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if _ONLY_CONTROL_CODE_RE.match(value.strip()):
+        return False
+    return True
 
 
 def _is_event_text_command(value: dict[str, Any]) -> bool:

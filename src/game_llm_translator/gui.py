@@ -70,7 +70,8 @@ from .xunity import apply_xunity, detect_xunity, extract_xunity
 
 
 class WorkerSignals(QObject):
-    log = Signal(str)
+    log = Signal(str, str)          # level, message
+    log_detail = Signal(str, str, str)  # level, source, message
     progress = Signal(int, int)
     progress_text = Signal(str)
     status = Signal(str)
@@ -105,6 +106,9 @@ class TranslatorGUI(QMainWindow):
 
         self.signals = WorkerSignals()
         self.signals.log.connect(self._append_log)
+        self.signals.log_detail.connect(self._append_detail_log)
+        self._log_row_limit = 2000
+        self._detail_row_limit = 5000
         self.signals.progress.connect(self._on_progress)
         self.signals.progress_text.connect(self._on_progress_text)
         self.signals.status.connect(self._on_status)
@@ -195,7 +199,8 @@ class TranslatorGUI(QMainWindow):
         self.tabs.addTab(self._build_review_tab(), "Review")
         self.tabs.addTab(self._build_apply_tab(), "Apply")
         self.tabs.addTab(self._build_recovery_tab(), "Backups")
-        self.tabs.addTab(self._build_logs_tab(), "Logs")
+        self.tabs.addTab(self._build_activity_tab(), "Activity")
+        self.tabs.addTab(self._build_detail_tab(), "Detail")
         root.addWidget(self.tabs, 1)
 
         # Status bar
@@ -479,23 +484,51 @@ class TranslatorGUI(QMainWindow):
         outer.addWidget(info)
         return tab
 
-    # ----- Logs tab -----
+    # ----- Activity tab & Detail tab -----
 
-    def _build_logs_tab(self) -> QWidget:
+    def _make_log_table(self, columns: list[str]) -> QTreeWidget:
+        t = QTreeWidget()
+        t.setHeaderLabels(columns)
+        t.setRootIsDecorated(False)
+        t.setAlternatingRowColors(True)
+        t.setSelectionMode(QTreeWidget.ExtendedSelection)
+        t.setSortingEnabled(False)
+        t.header().setStretchLastSection(True)
+        mono = QFont("Consolas", 8)
+        t.setFont(mono)
+        return t
+
+    def _build_activity_tab(self) -> QWidget:
         tab = QWidget()
         outer = QVBoxLayout(tab)
-        row = QHBoxLayout()
-        row.addWidget(self._action_button("Open Log Folder", self.open_logs))
-        clear_btn = QPushButton("Clear View")
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(self._action_button("Open Log Folder", self.open_logs))
+        clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(lambda: self.log_view.clear())
-        row.addWidget(clear_btn)
-        row.addStretch()
-        outer.addLayout(row)
-
-        self.log_view = QPlainTextEdit()
-        self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(5000)
+        toolbar.addWidget(clear_btn)
+        toolbar.addStretch()
+        outer.addLayout(toolbar)
+        self.log_view = self._make_log_table(["Time", "Level", "Message"])
+        self.log_view.setColumnWidth(0, 80)
+        self.log_view.setColumnWidth(1, 55)
         outer.addWidget(self.log_view, 1)
+        return tab
+
+    def _build_detail_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(self._action_button("Open Log Folder", self.open_logs))
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(lambda: self.detail_log_view.clear())
+        toolbar.addWidget(clear_btn)
+        toolbar.addStretch()
+        outer.addLayout(toolbar)
+        self.detail_log_view = self._make_log_table(["Time", "Level", "Source", "Message"])
+        self.detail_log_view.setColumnWidth(0, 80)
+        self.detail_log_view.setColumnWidth(1, 55)
+        self.detail_log_view.setColumnWidth(2, 120)
+        outer.addWidget(self.detail_log_view, 1)
         return tab
 
     # ------------------------------------------------------------------
@@ -566,13 +599,80 @@ class TranslatorGUI(QMainWindow):
     # Logging / status updates (signals)
     # ------------------------------------------------------------------
 
-    def _append_log(self, msg: str) -> None:
-        self.log_view.appendPlainText(msg)
-        self.log_view.moveCursor(QTextCursor.End)
+    _LEVEL_COLORS = {
+        "ERROR": QColor(200, 50, 50),
+        "WARN":  QColor(200, 130, 0),
+        "DEBUG": QColor(130, 130, 130),
+    }
 
-    def _log(self, msg: str) -> None:
-        log_event(msg)
-        self.signals.log.emit(msg)
+    def _append_log(self, level: str, msg: str) -> None:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        item = QTreeWidgetItem([ts, level, msg])
+        if level in self._LEVEL_COLORS:
+            c = self._LEVEL_COLORS[level]
+            for col in range(3):
+                item.setForeground(col, c)
+        self.log_view.addTopLevelItem(item)
+        self.log_view.scrollToItem(item)
+        if self.log_view.topLevelItemCount() > self._log_row_limit:
+            self.log_view.takeTopLevelItem(0)
+
+    def _append_detail_log(self, level: str, source: str, msg: str) -> None:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        item = QTreeWidgetItem([ts, level, source, msg])
+        if level in self._LEVEL_COLORS:
+            c = self._LEVEL_COLORS[level]
+            for col in range(4):
+                item.setForeground(col, c)
+        self.detail_log_view.addTopLevelItem(item)
+        self.detail_log_view.scrollToItem(item)
+        if self.detail_log_view.topLevelItemCount() > self._detail_row_limit:
+            self.detail_log_view.takeTopLevelItem(0)
+
+    _DETAIL_PREFIXES = (
+        "Batch ", "Quality warning", "Saved ", "Pre-dedup:",
+        "Batch failed", "Retrying", "retry_after", "Translated ",
+    )
+
+    @staticmethod
+    def _infer_source(msg: str) -> str:
+        """Best-effort: extract a short source label from the log message."""
+        if msg.startswith("Batch failed"):
+            return "pipeline"
+        if msg.startswith("Quality warning"):
+            # e.g. "Quality warning Actors.json:$[1].name: ..."
+            parts = msg.split(" ")
+            return parts[2] if len(parts) > 2 else "validate"
+        if msg.startswith("Saved "):
+            return "memory"
+        if msg.startswith("Pre-dedup:"):
+            return "pipeline"
+        if msg.startswith("Translated "):
+            return "pipeline"
+        if msg.startswith("Retrying") or msg.startswith("retry_after"):
+            return "llm"
+        if msg.startswith("Error"):
+            return "error"
+        if msg.startswith("Starting ") or msg.startswith("Finished ") or msg.startswith("Stopped "):
+            return "worker"
+        return "app"
+
+    _WARN_PREFIXES = ("Quality warning", "Batch failed", "WARN:")
+
+    def _log(self, msg: str, level: str = "INFO") -> None:
+        if level == "INFO" and any(msg.startswith(p) for p in self._WARN_PREFIXES):
+            level = "WARN"
+        log_event(msg, level=level)
+        source = self._infer_source(msg)
+        self.signals.log_detail.emit(level, source, msg)
+        if not any(msg.startswith(p) for p in self._DETAIL_PREFIXES):
+            self.signals.log.emit(level, msg)
+
+    def _log_detail(self, msg: str, source: str = "app", level: str = "DEBUG") -> None:
+        log_event(msg, level=level)
+        self.signals.log_detail.emit(level, source, msg)
 
     def _on_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -628,9 +728,9 @@ class TranslatorGUI(QMainWindow):
             raise RuntimeError("Stopped by user")
 
     def stop_current(self) -> None:
-        if self.current_worker and self.current_worker.is_alive():
-            self.stop_requested.set()
-            self._log("Stop requested...")
+        self.stop_requested.set()
+        self._log("Stop requested — finishing current request, then stopping...")
+        self.status_label.setText("Stopping...")
 
     def _run(self, name: str, func: Callable[[], None]) -> None:
         if self.current_worker and self.current_worker.is_alive():

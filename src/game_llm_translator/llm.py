@@ -5,6 +5,7 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
+import threading
 from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.parse import quote_plus
@@ -173,14 +174,30 @@ class ParseStats:
     skipped: int = 0
 
 
+_INVALID_BACKSLASH_RE = re.compile(r'\\(?!["\\/ \bfnrtu]|u[0-9a-fA-F]{4})')
+
+
+def _repair_invalid_escapes(text: str) -> str:
+    """Double-escape bare backslashes that are not valid JSON escape sequences.
+
+    LLMs sometimes emit RPG Maker codes like \\N[1], \\V[2], \\C[3] as literal
+    \\N, \\V, \\C inside a JSON string value, which are invalid JSON escapes.
+    This replaces e.g. \\N -> \\\\N so that json.loads can parse the response.
+    """
+    return _INVALID_BACKSLASH_RE.sub('\\\\\\\\', text)
+
+
 def _parse_translation_json(text: str) -> tuple[list[dict[str, Any]], ParseStats]:
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").removeprefix("json").strip()
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"LLM response was not valid JSON: {exc}. Preview: {_response_preview(text)}") from exc
+    except json.JSONDecodeError:
+        try:
+            data = json.loads(_repair_invalid_escapes(text))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"LLM response was not valid JSON: {exc}. Preview: {_response_preview(text)}") from exc
     if not isinstance(data, list):
         raise ValueError("LLM response must be a JSON array")
     items: list[dict[str, Any]] = []
@@ -224,9 +241,22 @@ def _results_from_json(entries: list[TextEntry], text: str) -> tuple[list[Transl
 
 class LLMProvider(ABC):
     glossary_block: str = ""
+    stop_event: threading.Event | None = None
 
     def set_glossary(self, glossary_block: str) -> None:
         self.glossary_block = glossary_block or ""
+
+    def _check_stop(self) -> None:
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise RuntimeError("Stopped by user")
+
+    def _sleep_interruptible(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self._check_stop()
+            time.sleep(min(0.25, max(0.0, end - time.monotonic())))
 
     @abstractmethod
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
@@ -239,12 +269,13 @@ class MTLProvider(LLMProvider):
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         results: list[TranslationResult] = []
         for entry in entries:
+            self._check_stop()
             masked_source, tokens = _mask_protected_tokens(entry.source)
             target = self.translate_text(masked_source, target_lang, source_lang)
             target = _restore_protected_tokens(target, tokens)
             results.append(TranslationResult(entry.file, entry.key, entry.source, target or entry.source, entry.context))
             if self.pause_seconds:
-                time.sleep(self.pause_seconds)
+                self._sleep_interruptible(self.pause_seconds)
         return results
 
     @abstractmethod
@@ -418,6 +449,7 @@ class AnthropicProvider(LLMProvider):
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
+        self._check_stop()
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
         max_tokens = min(_estimate_output_tokens(entries), 8192)
         message = self.client.messages.create(
@@ -466,6 +498,7 @@ class OpenAIProvider(LLMProvider):
         self.model = model
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
+        self._check_stop()
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
         response = self.client.chat.completions.create(
             model=self.model,

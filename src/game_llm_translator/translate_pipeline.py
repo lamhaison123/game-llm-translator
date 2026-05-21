@@ -58,8 +58,20 @@ def _log(options: TranslateOptions, message: str) -> None:
         options.on_log(message)
 
 
+STOPPED = "Stopped by user"
+
+
 def _stopped(options: TranslateOptions) -> bool:
     return options.stop_event is not None and options.stop_event.is_set()
+
+
+def _raise_if_stopped(options: TranslateOptions) -> None:
+    if _stopped(options):
+        raise RuntimeError(STOPPED)
+
+
+def _is_stopped_error(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and str(exc) == STOPPED
 
 
 def dedupe_results(results: list[TranslationResult], wanted_ids: set[tuple[str, str]] | None = None) -> list[TranslationResult]:
@@ -135,11 +147,12 @@ def translate_batch_with_retry(
     report: TranslateReport,
 ) -> list[TranslationResult]:
     for attempt in range(4):
-        if _stopped(options):
-            raise RuntimeError("Stopped by user")
+        _raise_if_stopped(options)
         try:
             return provider.translate_batch(batch, target_lang, source_lang)
-        except RuntimeError:
+        except RuntimeError as exc:
+            if _is_stopped_error(exc):
+                raise
             raise
         except Exception as exc:
             retryable, suggested = is_retryable(exc)
@@ -149,8 +162,7 @@ def translate_batch_with_retry(
                 _log(options, f"Batch error (retry {attempt + 1}/3 in {delay:.0f}s): {exc}")
                 end = time.monotonic() + delay
                 while time.monotonic() < end:
-                    if _stopped(options):
-                        raise RuntimeError("Stopped by user")
+                    _raise_if_stopped(options)
                     time.sleep(0.5)
             else:
                 raise
@@ -159,6 +171,7 @@ def translate_batch_with_retry(
 
 def _make_provider(options: TranslateOptions) -> LLMProvider:
     provider = make_provider(options.provider, options.model, options.api_key, options.api_base)
+    provider.stop_event = options.stop_event
     if options.glossary_path:
         entries = load_glossary(options.glossary_path)
         if entries:
@@ -175,6 +188,7 @@ def run_translate(
 ) -> tuple[list[TranslationResult], TranslateReport]:
     report = TranslateReport(total_entries=len(entries))
     wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
+    _raise_if_stopped(options)
     provider = _make_provider(options)
 
     existing: list[TranslationResult] = [] if options.restart else (load_results(translations_csv) if translations_csv.exists() else [])
@@ -229,11 +243,17 @@ def run_translate(
 
     def process_batch(batch: list[TextEntry]) -> None:
         nonlocal translated_count, results
+        if _stopped(options):
+            return
         try:
             batch_results = translate_batch_with_retry(provider, batch, options.target_lang, options.source_lang, options, report)
-        except RuntimeError:
+        except RuntimeError as exc:
+            if _is_stopped_error(exc):
+                raise
             raise
         except Exception as exc:
+            if _stopped(options):
+                raise RuntimeError(STOPPED) from exc
             report.batches_failed += 1
             _log(options, f"Batch failed (deferred): {exc}")
             failed_batches.append(batch)
@@ -243,13 +263,17 @@ def run_translate(
                     on_progress(min(translated_count, len(entries)), len(entries))
             return
 
+        if _stopped(options):
+            return
+
         expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
         for item in expanded:
             issues = translation_warnings(item.source, item.target)
             if issues:
                 report.placeholder_warnings += 1
-                if report.placeholder_warnings <= 5:
-                    _log(options, f"Quality warning {item.file.name}:{item.key}: {', '.join(issues)}")
+                _log(options, f"Quality warning {item.file.name}:{item.key}: {', '.join(issues)}")
+        if _stopped(options):
+            return
         with results_lock:
             translated_count += len(expanded)
             results.extend(expanded)
@@ -266,50 +290,81 @@ def run_translate(
             if on_progress:
                 on_progress(min(translated_count, len(entries)), len(entries))
 
-    if workers == 1:
-        for batch in batches:
-            if _stopped(options):
-                raise RuntimeError("Stopped by user")
-            process_batch(batch)
-    else:
-        import concurrent.futures
+    try:
+        if workers == 1:
+            for batch in batches:
+                _raise_if_stopped(options)
+                process_batch(batch)
+        else:
+            import concurrent.futures
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-        futures = {executor.submit(process_batch, batch): batch for batch in batches}
-        try:
-            for future in concurrent.futures.as_completed(futures):
-                if _stopped(options):
-                    for f in futures:
-                        f.cancel()
-                    raise RuntimeError("Stopped by user")
-                future.result()
-        finally:
-            executor.shutdown(wait=False)
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+            futures: list[concurrent.futures.Future[None]] = []
+            try:
+                for batch in batches:
+                    _raise_if_stopped(options)
+                    futures.append(executor.submit(process_batch, batch))
+                user_stopped = False
+                for future in concurrent.futures.as_completed(futures):
+                    if _stopped(options):
+                        user_stopped = True
+                        for pending in futures:
+                            pending.cancel()
+                        break
+                    try:
+                        future.result()
+                    except RuntimeError as exc:
+                        if _is_stopped_error(exc):
+                            user_stopped = True
+                            for pending in futures:
+                                pending.cancel()
+                            break
+                        raise
+                if user_stopped or _stopped(options):
+                    _raise_if_stopped(options)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
-    if failed_batches and not _stopped(options):
-        _log(options, f"--- Retrying {len(failed_batches)} deferred batch(es) ---")
-        time.sleep(5)
-        for batch in failed_batches:
-            if _stopped(options):
-                break
-            subs = [batch] if len(batch) <= 10 else [batch[: len(batch) // 2], batch[len(batch) // 2 :]]
-            for sub in subs:
-                try:
-                    batch_results = translate_batch_with_retry(provider, sub, options.target_lang, options.source_lang, options, report)
-                    expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
-                    with results_lock:
-                        results.extend(expanded)
-                        results = dedupe_results(results, wanted_ids)
-                        save_results(results, translations_csv)
-                    _log(options, f"Recovered {len(expanded)} entries")
-                except Exception as exc:
-                    _log(options, f"Deferred still failed (keeping source): {exc}")
-                    with results_lock:
-                        for ue in sub:
-                            for entry in groups.get(rep_identity_to_group.get(text_identity(ue.file, ue.key), dedupe_group_key(ue)), [ue]):
-                                results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
-                        results = dedupe_results(results, wanted_ids)
-                        save_results(results, translations_csv)
+        if failed_batches and not _stopped(options):
+            _log(options, f"--- Retrying {len(failed_batches)} deferred batch(es) ---")
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                _raise_if_stopped(options)
+                time.sleep(0.25)
+            for batch in failed_batches:
+                _raise_if_stopped(options)
+                subs = [batch] if len(batch) <= 10 else [batch[: len(batch) // 2], batch[len(batch) // 2 :]]
+                for sub in subs:
+                    try:
+                        batch_results = translate_batch_with_retry(provider, sub, options.target_lang, options.source_lang, options, report)
+                        if _stopped(options):
+                            _raise_if_stopped(options)
+                        expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
+                        with results_lock:
+                            results.extend(expanded)
+                            results = dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+                        _log(options, f"Recovered {len(expanded)} entries")
+                    except RuntimeError as exc:
+                        if _is_stopped_error(exc):
+                            raise
+                        raise
+                    except Exception as exc:
+                        _log(options, f"Deferred still failed (keeping source): {exc}")
+                        with results_lock:
+                            for ue in sub:
+                                for entry in groups.get(rep_identity_to_group.get(text_identity(ue.file, ue.key), dedupe_group_key(ue)), [ue]):
+                                    results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
+                            results = dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+    except RuntimeError as exc:
+        if _is_stopped_error(exc):
+            _log(options, "Translation stopped by user.")
+            raise
+        raise
+
+    if _stopped(options):
+        _raise_if_stopped(options)
 
     report.translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
     report.fallback = len(entries) - report.translated
