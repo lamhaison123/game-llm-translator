@@ -267,6 +267,9 @@ def run_translate(
         if _stopped(options):
             return
 
+        missed = sum(1 for r in batch_results if r.target == r.source)
+        if missed:
+            _log(options, f"WARN: LLM missed {missed}/{len(batch_results)} entries (fallback to source)")
         expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
         for item in expanded:
             issues = translation_warnings(item.source, item.target)

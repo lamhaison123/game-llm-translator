@@ -39,8 +39,11 @@ def save_entries(entries: list[TextEntry], file: Path) -> None:
 
 
 def load_entries(file: Path) -> list[TextEntry]:
-    with file.open("r", newline="", encoding="utf-8-sig") as fp:
-        return [TextEntry(Path(row["file"]), row["key"], row["source"], row.get("context", ""), row.get("context_text", "")) for row in csv.DictReader(fp)]
+    try:
+        with file.open("r", newline="", encoding="utf-8-sig") as fp:
+            return [TextEntry(Path(row["file"]), row["key"], row["source"], row.get("context", ""), row.get("context_text", "")) for row in csv.DictReader(fp)]
+    except (OSError, UnicodeDecodeError, csv.Error, KeyError) as exc:
+        raise ValueError(f"Failed to load entries from {file}: {exc}") from exc
 
 
 def save_results(results: list[TranslationResult], file: Path) -> None:
@@ -53,8 +56,11 @@ def save_results(results: list[TranslationResult], file: Path) -> None:
 
 
 def load_results(file: Path) -> list[TranslationResult]:
-    with file.open("r", newline="", encoding="utf-8-sig") as fp:
-        return [
-            TranslationResult(Path(row["file"]), row["key"], row["source"], row["target"], row.get("context", ""))
-            for row in csv.DictReader(fp)
-        ]
+    try:
+        with file.open("r", newline="", encoding="utf-8-sig") as fp:
+            return [
+                TranslationResult(Path(row["file"]), row["key"], row["source"], row["target"], row.get("context", ""))
+                for row in csv.DictReader(fp)
+            ]
+    except (OSError, UnicodeDecodeError, csv.Error, KeyError) as exc:
+        raise ValueError(f"Failed to load results from {file}: {exc}") from exc

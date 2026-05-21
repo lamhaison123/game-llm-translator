@@ -477,9 +477,7 @@ class AnthropicProvider(LLMProvider):
         log_api_call("anthropic", "RESPONSE", text, entry_count=len(entries))
         if getattr(message, "stop_reason", None) == "max_tokens":
             raise ValueError("Anthropic response truncated (max_tokens); retry with smaller batch")
-        results, stats = _results_from_json(entries, text)
-        if stats.fallback:
-            log_event(f"LLM missed {stats.fallback}/{len(entries)} entries (fallback to source)", level="WARN")
+        results, _stats = _results_from_json(entries, text)
         return results
 
 
@@ -544,9 +542,7 @@ class OpenAIProvider(LLMProvider):
             finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
             if finish == "length":
                 raise ValueError("OpenAI response truncated (finish_reason=length); retry with smaller batch")
-        results, stats = _results_from_json(entries, text)
-        if stats.fallback:
-            log_event(f"LLM missed {stats.fallback}/{len(entries)} entries (fallback to source)", level="WARN")
+        results, _stats = _results_from_json(entries, text)
         return results
 
 

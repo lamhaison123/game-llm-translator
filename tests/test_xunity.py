@@ -85,6 +85,15 @@ def test_extract_xunity_basic(tmp_path):
     })
     entries = extract_xunity(tmp_path)
     sources = sorted(e.source for e in entries)
+    assert sources == ["こんにちは"]
+
+
+def test_extract_xunity_skip_translated_false(tmp_path):
+    _setup_xunity(tmp_path, {
+        "manual.txt": "こんにちは=\nシンプルリング=Simple Ring\n",
+    })
+    entries = extract_xunity(tmp_path, skip_translated=False)
+    sources = sorted(e.source for e in entries)
     assert sources == ["こんにちは", "シンプルリング"]
 
 

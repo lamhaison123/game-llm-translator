@@ -61,12 +61,13 @@ def _iter_xunity_text_files(translation_dir: Path) -> Iterator[Path]:
             yield txt
 
 
-def extract_xunity(game_dir: Path) -> list[TextEntry]:
-    """Read all XUnity translation files and return entries with empty/missing translations.
+def extract_xunity(game_dir: Path, skip_translated: bool = True) -> list[TextEntry]:
+    """Read all XUnity translation files and return entries that need translation.
 
     Each entry's `key` is the original text itself (used as lookup key on apply).
-    Already-translated entries (where translation != "") are still extracted so the
-    LLM can review/improve them; downstream code can choose to skip those via memory.
+    By default (skip_translated=True), entries that already have a non-empty translation
+    in the source .txt file are skipped — they don't need to be sent to the LLM again.
+    Pass skip_translated=False to extract all entries regardless.
     """
     translation_dir = detect_xunity(game_dir)
     if translation_dir is None:
@@ -82,7 +83,9 @@ def extract_xunity(game_dir: Path) -> list[TextEntry]:
             parsed = _parse_line(line)
             if parsed is None:
                 continue
-            original, _existing = parsed
+            original, existing = parsed
+            if skip_translated and existing.strip():
+                continue
             identity = (str(file), original)
             if identity in seen:
                 continue

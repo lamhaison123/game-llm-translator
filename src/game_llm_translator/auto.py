@@ -116,7 +116,7 @@ def auto_translate_game(
         for message in extract_warnings:
             log_event(message, level="WARN")
             if progress:
-                progress(message)
+                progress(f"WARN: {message}")
     log_event(f"Extracted {len(entries)} text entries from {game_dir}")
     if progress:
         progress(f"Extracted {len(entries)} text entries")
