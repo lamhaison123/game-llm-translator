@@ -217,19 +217,29 @@ def test_resolve_xunity_lang():
 
 def test_write_xunity_config_lang_mapping(tmp_path):
     from game_llm_translator.unity_setup import _write_xunity_config
-    _write_xunity_config(tmp_path, "Vietnamese")
+    _write_xunity_config(tmp_path, "Vietnamese", "Japanese")
     cfg = (tmp_path / "BepInEx" / "config" / "AutoTranslatorConfig.ini").read_text()
     assert "Language=vi" in cfg
+    assert "FromLanguage=ja" in cfg
     assert "OutputUntranslatableText=True" in cfg
     assert (tmp_path / "BepInEx" / "Translation" / "vi" / "Text").is_dir()
+
+
+def test_write_xunity_config_custom_from_lang(tmp_path):
+    from game_llm_translator.unity_setup import _write_xunity_config
+    _write_xunity_config(tmp_path, "English", "Korean")
+    cfg = (tmp_path / "BepInEx" / "config" / "AutoTranslatorConfig.ini").read_text()
+    assert "Language=en" in cfg
+    assert "FromLanguage=ko" in cfg
 
 
 def test_write_xunity_config_overwrites(tmp_path):
     from game_llm_translator.unity_setup import _write_xunity_config
     _write_xunity_config(tmp_path, "Vietnamese")
-    _write_xunity_config(tmp_path, "Korean")
+    _write_xunity_config(tmp_path, "Korean", "Chinese")
     cfg = (tmp_path / "BepInEx" / "config" / "AutoTranslatorConfig.ini").read_text()
     assert "Language=ko" in cfg
+    assert "FromLanguage=zh-CN" in cfg
 
 
 def test_install_xunity_raises_if_manifest_exists(tmp_path):

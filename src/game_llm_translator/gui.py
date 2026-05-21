@@ -1393,12 +1393,16 @@ class TranslatorGUI(QMainWindow):
         if QMessageBox.question(self, "Install BepInEx + XUnity", msg) != QMessageBox.StandardButton.Yes:
             return
         target_lang = self.target_lang_edit.text().strip() or "vi"
+        src = self.source_lang_edit.text().strip()
+        from_lang = "auto" if not src or src.lower() == "auto" else src
+        from_lang = from_lang if from_lang != "auto" else "ja"
 
         def job() -> None:
             manifest = install_xunity(
                 game_dir,
                 progress=lambda m: (self._check_stopped(), self._log(m))[1],
                 target_lang=target_lang,
+                from_lang=from_lang,
             )
             self._log(f"BepInEx {manifest.bepinex_tag} + XUnity {manifest.xunity_tag} installed ({len(manifest.files)} files)")
             self.signals.refresh_xunity.emit()
@@ -1411,18 +1415,22 @@ class TranslatorGUI(QMainWindow):
             QMessageBox.critical(self, "Fix XUnity Config", str(exc))
             return
         target_lang = self.target_lang_edit.text().strip() or "vi"
+        src = self.source_lang_edit.text().strip()
+        from_lang = src if src and src.lower() != "auto" else "ja"
         lang_code = resolve_xunity_lang(target_lang)
+        from_code = resolve_xunity_lang(from_lang)
         msg = (
             f"Rewrite XUnity AutoTranslatorConfig.ini for:\n{game_dir}\n\n"
-            f"Target language: {target_lang} → ISO code: {lang_code}\n\n"
+            f"From: {from_lang} → {from_code}\n"
+            f"To:   {target_lang} → {lang_code}\n\n"
             "This will overwrite the existing config. Run the game again after fixing."
         )
         if QMessageBox.question(self, "Fix XUnity Config", msg) != QMessageBox.StandardButton.Yes:
             return
 
         def job() -> None:
-            _write_xunity_config(game_dir, target_lang, progress=lambda m: self._log(m))
-            self._log(f"XUnity config fixed: Language={lang_code}")
+            _write_xunity_config(game_dir, target_lang, from_lang, progress=lambda m: self._log(m))
+            self._log(f"XUnity config fixed: {from_code} -> {lang_code}")
             self.signals.refresh_xunity.emit()
         self._run("fix xunity config", job)
 
