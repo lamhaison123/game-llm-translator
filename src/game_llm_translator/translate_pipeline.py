@@ -136,6 +136,12 @@ def is_retryable(exc: Exception) -> tuple[bool, float]:
         return True, 5.0
     if any(k in msg.lower() for k in ("timeout", "timed out", "connection", "truncated")):
         return True, 15.0
+    if "not valid json" in msg.lower() or "expecting value" in msg.lower():
+        return True, 5.0
+    if "returned no choices" in msg.lower() or "returned empty" in msg.lower() or "returned no message" in msg.lower():
+        return True, 5.0
+    if "overloaded" in msg.lower():
+        return True, 30.0
     return False, 0.0
 
 
@@ -151,15 +157,13 @@ def translate_batch_with_retry(
         _raise_if_stopped(options)
         try:
             return provider.translate_batch(batch, target_lang, source_lang)
-        except RuntimeError as exc:
+        except Exception as exc:
             if _is_stopped_error(exc):
                 raise
-            raise
-        except Exception as exc:
             retryable, suggested = is_retryable(exc)
             if retryable and attempt < 3:
                 report.batches_retried += 1
-                delay = max(suggested, 5.0 * (attempt + 1))
+                delay = max(suggested, 5.0 * 2 ** attempt)
                 _log(options, f"Batch error (retry {attempt + 1}/3 in {delay:.0f}s): {exc}")
                 end = time.monotonic() + delay
                 while time.monotonic() < end:
@@ -332,32 +336,42 @@ def run_translate(
             while time.monotonic() < end:
                 _raise_if_stopped(options)
                 time.sleep(0.25)
+
+            def retry_sub(sub: list[TextEntry]) -> None:
+                """Recursively split and retry until batch size == 1 or success."""
+                if not sub or _stopped(options):
+                    return
+                try:
+                    batch_results = translate_batch_with_retry(provider, sub, options.target_lang, options.source_lang, options, report)
+                    if _stopped(options):
+                        _raise_if_stopped(options)
+                    expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
+                    with results_lock:
+                        results.extend(expanded)
+                        results = dedupe_results(results, wanted_ids)
+                        save_results(results, translations_csv)
+                    _log(options, f"Recovered {len(expanded)} entries")
+                except Exception as exc:
+                    if _is_stopped_error(exc):
+                        raise
+                    if len(sub) > 1:
+                        mid = len(sub) // 2
+                        _log(options, f"Splitting failed batch ({len(sub)} -> {mid}+{len(sub)-mid}): {exc}")
+                        retry_sub(sub[:mid])
+                        if not _stopped(options):
+                            retry_sub(sub[mid:])
+                    else:
+                        _log(options, f"Single entry still failed (keeping source): {exc}")
+                        with results_lock:
+                            entry = sub[0]
+                            for e in groups.get(rep_identity_to_group.get(text_identity(entry.file, entry.key), dedupe_group_key(entry)), [entry]):
+                                results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
+                            results = dedupe_results(results, wanted_ids)
+                            save_results(results, translations_csv)
+
             for batch in failed_batches:
                 _raise_if_stopped(options)
-                subs = [batch] if len(batch) <= 10 else [batch[: len(batch) // 2], batch[len(batch) // 2 :]]
-                for sub in subs:
-                    try:
-                        batch_results = translate_batch_with_retry(provider, sub, options.target_lang, options.source_lang, options, report)
-                        if _stopped(options):
-                            _raise_if_stopped(options)
-                        expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
-                        with results_lock:
-                            results.extend(expanded)
-                            results = dedupe_results(results, wanted_ids)
-                            save_results(results, translations_csv)
-                        _log(options, f"Recovered {len(expanded)} entries")
-                    except RuntimeError as exc:
-                        if _is_stopped_error(exc):
-                            raise
-                        raise
-                    except Exception as exc:
-                        _log(options, f"Deferred still failed (keeping source): {exc}")
-                        with results_lock:
-                            for ue in sub:
-                                for entry in groups.get(rep_identity_to_group.get(text_identity(ue.file, ue.key), dedupe_group_key(ue)), [ue]):
-                                    results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
-                            results = dedupe_results(results, wanted_ids)
-                            save_results(results, translations_csv)
+                retry_sub(batch)
     except RuntimeError as exc:
         if _is_stopped_error(exc):
             _log(options, "Translation stopped by user.")
