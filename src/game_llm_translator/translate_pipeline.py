@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .app_logging import log_event
 from .csv_store import load_results, save_results
-from .glossary import format_glossary_for_prompt, load_glossary
+from .glossary import apply_correction_table, format_glossary_for_prompt, load_correction_table, load_glossary
 from .llm import LLMProvider, make_provider
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
@@ -33,6 +33,7 @@ class TranslateOptions:
     save_memory: bool = True
     memory_paths: list[Path] | None = None
     glossary_path: Path | None = None
+    correction_table_path: Path | None = None
     dedupe_by_source: bool = True
     restart: bool = False
     on_log: LogFn | None = None
@@ -92,6 +93,32 @@ def estimate_batch_size(entries: list[TextEntry], target_tokens: int = 8000) -> 
     avg_chars = sum(len(e.source) + len(e.context_text) for e in sample) / len(sample)
     avg_tokens = max(1, avg_chars / 3.5)
     return min(max(1, int(target_tokens / avg_tokens)), 60)
+
+
+def build_char_batches(
+    entries: list[TextEntry],
+    max_entries: int,
+    max_chars: int = 12000,
+) -> list[list[TextEntry]]:
+    """Split entries into batches respecting both entry count and total char limits.
+
+    Inspired by Translator++ maxRequestLength option. Prevents token overflow
+    when individual entries are long (e.g. multi-paragraph descriptions).
+    """
+    batches: list[list[TextEntry]] = []
+    current: list[TextEntry] = []
+    current_chars = 0
+    for entry in entries:
+        entry_chars = len(entry.source) + len(entry.context_text)
+        if current and (len(current) >= max_entries or current_chars + entry_chars > max_chars):
+            batches.append(current)
+            current = []
+            current_chars = 0
+        current.append(entry)
+        current_chars += entry_chars
+    if current:
+        batches.append(current)
+    return batches
 
 
 def dedupe_group_key(entry: TextEntry) -> tuple[str, str]:
@@ -218,6 +245,9 @@ def run_translate(
     wanted_ids = {text_identity(entry.file, entry.key) for entry in entries}
     _raise_if_stopped(options)
     provider = _make_provider(options)
+    corrections = load_correction_table(options.correction_table_path)
+    if corrections:
+        _log(options, f"Correction table: {len(corrections)} rules from {options.correction_table_path}")
 
     existing: list[TranslationResult] = [] if options.restart else (load_results(translations_csv) if translations_csv.exists() else [])
     results = dedupe_results(existing, wanted_ids)
@@ -263,7 +293,7 @@ def run_translate(
     if raw_size <= 0:
         _log(options, f"Auto batch size: {size}")
 
-    batches = [unique_entries[s : s + size] for s in range(0, len(unique_entries), size)]
+    batches = build_char_batches(unique_entries, max_entries=size)
     workers = max(1, min(8, options.workers))
     results_lock = threading.Lock()
     translated_count = len(results)
@@ -303,6 +333,11 @@ def run_translate(
         if missed:
             _log(options, f"WARN: LLM missed {missed}/{len(batch_results)} entries (fallback to source)")
         expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
+        if corrections:
+            expanded = [
+                TranslationResult(r.file, r.key, r.source, apply_correction_table(r.target, corrections), r.context)
+                for r in expanded
+            ]
         for item in expanded:
             issues = translation_warnings(item.source, item.target)
             if issues:

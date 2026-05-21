@@ -31,6 +31,37 @@ def load_glossary(path: Path | None) -> list[tuple[str, str]]:
     return entries
 
 
+def load_correction_table(path: Path | None) -> list[tuple[str, str]]:
+    """Load (find, replace) pairs from a CSV with columns: find, replace.
+
+    Applied as post-processing after translation to enforce consistent terminology.
+    Rows missing 'find' are skipped. 'replace' can be empty (to delete a term).
+    Returns an empty list if path is None or file doesn't exist.
+    """
+    if path is None or not path.exists():
+        return []
+    entries: list[tuple[str, str]] = []
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as fp:
+            reader = csv.DictReader(fp)
+            for row in reader:
+                find = (row.get("find") or "").strip()
+                replace = (row.get("replace") or "").strip()
+                if not find:
+                    continue
+                entries.append((find, replace))
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return []
+    return entries
+
+
+def apply_correction_table(text: str, corrections: list[tuple[str, str]]) -> str:
+    """Apply correction table entries as simple string replacements."""
+    for find, replace in corrections:
+        text = text.replace(find, replace)
+    return text
+
+
 def format_glossary_for_prompt(entries: list[tuple[str, str]], max_chars: int = 4000) -> str:
     """Render glossary entries as a system prompt addon block.
 

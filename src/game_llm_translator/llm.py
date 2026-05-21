@@ -89,6 +89,25 @@ def _restore_protected_tokens(text: str, mapping: dict[str, str]) -> str:
     return text
 
 
+_FIX_BRACKET_RE = re.compile(r'\\(\w+)\s*\[\s*(.*?)\s*\]')
+_FIX_ANGLE_RE = re.compile(r'\\(\w+)\s*<\s*(.*?)\s*>')
+_FIX_PERCENT_RE = re.compile(r'%\s*(\d+)')
+_FIX_BACKSLASH_RE = re.compile(r'\\\s*([{}\$!><\^\\])')
+
+
+def _fix_token_formatting(text: str) -> str:
+    """Normalize RPG Maker tokens that LLMs corrupt by adding spaces.
+
+    Examples: \\N [1] -> \\N[1], \\V[ 2 ] -> \\V[2], % 1 -> %1, \\ ! -> \\!
+    Inspired by Translator++ fixTranslationFormatting().
+    """
+    text = _FIX_BRACKET_RE.sub(r'\\\1[\2]', text)
+    text = _FIX_ANGLE_RE.sub(r'\\\1<\2>', text)
+    text = _FIX_PERCENT_RE.sub(r'%\1', text)
+    text = _FIX_BACKSLASH_RE.sub(r'\\\1', text)
+    return text
+
+
 SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, visual novel, and game UI text.
 
 ## Output format
@@ -276,6 +295,7 @@ def _results_from_json(
             stats.fallback += 1
         if token_maps and i < len(token_maps) and token_maps[i]:
             target = _restore_protected_tokens(target, token_maps[i])
+        target = _fix_token_formatting(target)
         results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context))
     return results, stats
 
