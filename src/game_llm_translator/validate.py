@@ -18,8 +18,12 @@ def translation_warnings(source: str, target: str) -> list[str]:
     tgt_newlines = target.count("\n")
     if src_newlines and tgt_newlines != src_newlines:
         warnings.append(f"newline count mismatch ({src_newlines} vs {tgt_newlines})")
-    _cjk_short = len(source) <= 10 and any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' for c in source)
-    _ratio = 8 if _cjk_short else 3
-    if len(target) > len(source) * _ratio and len(source) < 120:
-        warnings.append("translation much longer than source (possible UI overflow)")
+    _cjk_chars = sum(1 for c in source if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7a3')
+    _cjk_ratio = _cjk_chars / max(len(source), 1)
+    if _cjk_ratio >= 0.5 and len(source) <= 6:
+        pass
+    else:
+        _ratio = 8 if (_cjk_ratio >= 0.5 and len(source) <= 10) else 3
+        if len(target) > len(source) * _ratio and len(source) < 120:
+            warnings.append("translation much longer than source (possible UI overflow)")
     return warnings

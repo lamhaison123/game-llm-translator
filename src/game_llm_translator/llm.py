@@ -178,6 +178,23 @@ class ParseStats:
 
 _INVALID_BACKSLASH_RE = re.compile(r'\\(?!["\\/ \bfnrtu]|u[0-9a-fA-F]{4})')
 
+_MOJIBAKE_RE = re.compile(r'[\xc0-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}|[\xf0-\xf7][\x80-\xbf]{3}')
+
+
+def _repair_mojibake(text: str) -> str:
+    """Fix UTF-8 text that was incorrectly decoded as Latin-1 by the server.
+
+    Some OpenAI-compatible servers return UTF-8 bytes but the response is
+    treated as Latin-1, producing sequences like 'TÃ´i' instead of 'Tôi'.
+    Detect this by checking for Latin-1 multibyte sequences and re-encode.
+    """
+    if not _MOJIBAKE_RE.search(text):
+        return text
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
 
 def _repair_invalid_escapes(text: str) -> str:
     """Double-escape bare backslashes that are not valid JSON escape sequences.
@@ -193,6 +210,7 @@ def _parse_translation_json(text: str) -> tuple[list[dict[str, Any]], ParseStats
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`").removeprefix("json").strip()
+    text = _repair_mojibake(text)
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
