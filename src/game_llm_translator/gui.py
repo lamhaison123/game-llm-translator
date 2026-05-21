@@ -9,7 +9,7 @@ import concurrent.futures
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPalette, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
