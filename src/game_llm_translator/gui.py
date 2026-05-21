@@ -202,6 +202,7 @@ class TranslatorGUI(QMainWindow):
         self.tabs.addTab(self._build_recovery_tab(), "Backups")
         self.tabs.addTab(self._build_activity_tab(), "Activity")
         self.tabs.addTab(self._build_detail_tab(), "Detail")
+        self.tabs.addTab(self._build_api_log_tab(), "API Log")
         root.addWidget(self.tabs, 1)
 
         # Status bar
@@ -548,6 +549,76 @@ class TranslatorGUI(QMainWindow):
         self.detail_log_view.setColumnWidth(2, 120)
         outer.addWidget(self.detail_log_view, 1)
         return tab
+
+    def _build_api_log_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+
+        toolbar = QHBoxLayout()
+        refresh_btn = self._safe_button("Refresh", self._api_log_refresh)
+        toolbar.addWidget(refresh_btn)
+        clear_btn = QPushButton("Clear view")
+        clear_btn.clicked.connect(lambda: self.api_log_view.clear())
+        toolbar.addWidget(clear_btn)
+        toolbar.addWidget(self._safe_button("Open File", self._open_api_log))
+        toolbar.addWidget(self._safe_button("Open Log Folder", self.open_logs))
+
+        self._api_log_follow = QCheckBox("Follow (auto-scroll)")
+        self._api_log_follow.setChecked(True)
+        toolbar.addWidget(self._api_log_follow)
+        toolbar.addStretch()
+
+        hint = QLabel("Enable 'Log full API requests & responses' in Provider tab to populate this log.")
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        toolbar.addWidget(hint)
+
+        outer.addLayout(toolbar)
+
+        self.api_log_view = QPlainTextEdit()
+        self.api_log_view.setReadOnly(True)
+        self.api_log_view.setFont(QFont("Consolas", 8))
+        outer.addWidget(self.api_log_view, 1)
+
+        self._api_log_file_size = 0
+        self._api_log_timer = QTimer(self)
+        self._api_log_timer.setInterval(2000)
+        self._api_log_timer.timeout.connect(self._api_log_poll)
+
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        return tab
+
+    def _on_tab_changed(self, index: int) -> None:
+        api_log_index = self.tabs.count() - 1
+        if index == api_log_index:
+            self._api_log_refresh()
+            self._api_log_timer.start()
+        else:
+            self._api_log_timer.stop()
+
+    def _api_log_poll(self) -> None:
+        from .app_logging import api_log_file_path
+        path = api_log_file_path()
+        if not path.exists():
+            return
+        size = path.stat().st_size
+        if size != self._api_log_file_size:
+            self._api_log_refresh()
+
+    def _api_log_refresh(self) -> None:
+        from .app_logging import api_log_file_path
+        path = api_log_file_path()
+        if not path.exists():
+            self.api_log_view.setPlaceholderText(f"No API debug log yet today.\nFile: {path}")
+            return
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            self._api_log_file_size = path.stat().st_size
+            self.api_log_view.setPlainText(text)
+            if self._api_log_follow.isChecked():
+                sb = self.api_log_view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Helpers / state
