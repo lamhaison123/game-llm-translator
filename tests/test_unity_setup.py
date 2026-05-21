@@ -161,6 +161,8 @@ def test_install_xunity_mocked(tmp_path):
             shutil.copy2(xunity_zip, dest)
 
     with patch("game_llm_translator.unity_setup._cache_dir", return_value=cache), \
+         patch("game_llm_translator.unity_setup._find_bundled_bepinex", return_value=None), \
+         patch("game_llm_translator.unity_setup._find_bundled_xunity", return_value=None), \
          patch("game_llm_translator.unity_setup._latest_release_asset", side_effect=fake_latest_asset), \
          patch("game_llm_translator.unity_setup._download_file", side_effect=fake_download):
         manifest = install_xunity(tmp_path, target_lang="vi")
@@ -171,6 +173,35 @@ def test_install_xunity_mocked(tmp_path):
     assert (tmp_path / "BepInEx" / "core.dll").exists()
     assert (tmp_path / "BepInEx" / "plugins" / "XUnity.dll").exists()
     assert xunity_manifest_path(tmp_path).exists()
+
+
+def test_install_xunity_uses_bundled_when_available(tmp_path):
+    """When bundled zips exist, no HTTP calls should be made."""
+    (tmp_path / "UnityPlayer.dll").write_bytes(b"fake")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    bepinex_zip = _make_zip(cache, "BepInEx_win_x64_5.4.23.zip", {"winhttp.dll": b"bep"})
+    xunity_zip = _make_zip(cache, "XUnity.AutoTranslator-BepInEx-5.6.1.zip", {"BepInEx/plugins/XUnity.dll": b"xu"})
+
+    with patch("game_llm_translator.unity_setup._find_bundled_bepinex", return_value=bepinex_zip), \
+         patch("game_llm_translator.unity_setup._find_bundled_xunity", return_value=xunity_zip), \
+         patch("game_llm_translator.unity_setup._latest_release_asset") as mock_online, \
+         patch("game_llm_translator.unity_setup._download_file") as mock_dl:
+        manifest = install_xunity(tmp_path, target_lang="vi")
+
+    mock_online.assert_not_called()
+    mock_dl.assert_not_called()
+    assert manifest.bepinex_tag == "v5.4.23"
+    assert manifest.xunity_tag == "v5.6.1"
+    assert (tmp_path / "winhttp.dll").exists()
+
+
+def test_tag_from_zip_name():
+    from game_llm_translator.unity_setup import _tag_from_zip_name
+    assert _tag_from_zip_name("BepInEx_win_x64_5.4.23.5.zip") == "v5.4.23.5"
+    assert _tag_from_zip_name("XUnity.AutoTranslator-BepInEx-5.6.1.zip") == "v5.6.1"
+    assert _tag_from_zip_name("unknown.zip") == "bundled"
 
 
 def test_install_xunity_raises_if_manifest_exists(tmp_path):

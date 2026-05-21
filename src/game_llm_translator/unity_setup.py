@@ -121,6 +121,64 @@ def _is_windows() -> bool:
     return platform.system() == "Windows"
 
 
+def _bundled_xunity_dir() -> Path:
+    """Return path to vendored xunity archives shipped with the package.
+
+    When running as a PyInstaller bundle, files added via --add-data live under sys._MEIPASS.
+    Otherwise they're at <repo>/vendor/xunity/ relative to the source tree.
+    """
+    import sys
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return Path(bundle_dir) / "vendor" / "xunity"
+    return Path(__file__).resolve().parent.parent.parent / "vendor" / "xunity"
+
+
+def _tag_from_zip_name(name: str) -> str:
+    """Extract version tag from filenames.
+
+    BepInEx_win_x64_5.4.23.5.zip -> v5.4.23.5
+    XUnity.AutoTranslator-BepInEx-5.6.1.zip -> v5.6.1
+    """
+    stem = name.replace(".zip", "")
+    for part in reversed(stem.replace("-", "_").split("_")):
+        if part and part[0].isdigit() and "." in part:
+            return f"v{part}"
+    return "bundled"
+
+
+def _find_bundled_bepinex() -> Path | None:
+    """Return bundled BepInEx zip for the current platform, or None."""
+    d = _bundled_xunity_dir()
+    if not d.exists():
+        return None
+    prefix = "BepInEx_win_x64_" if _is_windows() else "BepInEx_linux_x64_"
+    for f in d.glob("*.zip"):
+        if f.name.startswith(prefix):
+            return f
+    return None
+
+
+def _find_bundled_xunity() -> Path | None:
+    """Return bundled XUnity (Mono) zip, or None."""
+    d = _bundled_xunity_dir()
+    if not d.exists():
+        return None
+    for f in d.glob("*.zip"):
+        if "XUnity.AutoTranslator-BepInEx-" in f.name and "IL2CPP" not in f.name:
+            return f
+    return None
+
+
+def _validate_zip(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            zf.namelist()
+        return True
+    except Exception:
+        return False
+
+
 def _download_file(url: str, dest: Path, progress: Callable[[str], None] | None = None) -> None:
     if dest.exists() and dest.stat().st_size > 0:
         return
@@ -189,20 +247,38 @@ def install_xunity(
     cache = _cache_dir()
     is_win = _is_windows()
 
-    # --- Download BepInEx ---
-    bepinex_filter = BEPINEX_WIN_ASSET if is_win else BEPINEX_LINUX_ASSET
-    if progress:
-        progress("Fetching BepInEx latest release info...")
-    bepinex_url, bepinex_tag = _latest_release_asset(BEPINEX_REPO_API, bepinex_filter)
-    bepinex_zip = cache / f"BepInEx_{bepinex_tag}_{'win' if is_win else 'linux'}_x64.zip"
-    _download_file(bepinex_url, bepinex_zip, progress)
+    # --- Resolve BepInEx: bundled > cached > online ---
+    bepinex_zip: Path
+    bepinex_tag: str
+    bundled_bep = _find_bundled_bepinex()
+    if bundled_bep is not None and _validate_zip(bundled_bep):
+        bepinex_zip = bundled_bep
+        bepinex_tag = _tag_from_zip_name(bundled_bep.name)
+        if progress:
+            progress(f"BepInEx: using bundled {bundled_bep.name}")
+    else:
+        bepinex_filter = BEPINEX_WIN_ASSET if is_win else BEPINEX_LINUX_ASSET
+        if progress:
+            progress("BepInEx: fetching latest release from GitHub...")
+        bepinex_url, bepinex_tag = _latest_release_asset(BEPINEX_REPO_API, bepinex_filter)
+        bepinex_zip = cache / f"BepInEx_{bepinex_tag}_{'win' if is_win else 'linux'}_x64.zip"
+        _download_file(bepinex_url, bepinex_zip, progress)
 
-    # --- Download XUnity ---
-    if progress:
-        progress("Fetching XUnity.AutoTranslator latest release info...")
-    xunity_url, xunity_tag = _latest_release_asset(XUNITY_REPO_API, XUNITY_ASSET_NAME)
-    xunity_zip = cache / f"XUnity_{xunity_tag}.zip"
-    _download_file(xunity_url, xunity_zip, progress)
+    # --- Resolve XUnity: bundled > cached > online ---
+    xunity_zip: Path
+    xunity_tag: str
+    bundled_xu = _find_bundled_xunity()
+    if bundled_xu is not None and _validate_zip(bundled_xu):
+        xunity_zip = bundled_xu
+        xunity_tag = _tag_from_zip_name(bundled_xu.name)
+        if progress:
+            progress(f"XUnity: using bundled {bundled_xu.name}")
+    else:
+        if progress:
+            progress("XUnity: fetching latest release from GitHub...")
+        xunity_url, xunity_tag = _latest_release_asset(XUNITY_REPO_API, XUNITY_ASSET_NAME)
+        xunity_zip = cache / f"XUnity_{xunity_tag}.zip"
+        _download_file(xunity_url, xunity_zip, progress)
 
     records: list[XUnityFileRecord] = []
     created_dirs: set[str] = set()
