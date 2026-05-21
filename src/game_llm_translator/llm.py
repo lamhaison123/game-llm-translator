@@ -222,7 +222,25 @@ def _estimate_output_tokens(entries: list[TextEntry]) -> int:
     return max(1024, min(int(chars * 1.5) + 512, 16384))
 
 
-def _results_from_json(entries: list[TextEntry], text: str) -> tuple[list[TranslationResult], ParseStats]:
+def _mask_entries(entries: list[TextEntry]) -> tuple[list[TextEntry], list[dict[str, str]]]:
+    """Return copies of entries with protected tokens masked, plus per-entry token maps."""
+    masked_entries: list[TextEntry] = []
+    token_maps: list[dict[str, str]] = []
+    for entry in entries:
+        masked_source, mapping = _mask_protected_tokens(entry.source)
+        token_maps.append(mapping)
+        if mapping:
+            masked_entries.append(TextEntry(entry.file, entry.key, masked_source, entry.context, entry.context_text))
+        else:
+            masked_entries.append(entry)
+    return masked_entries, token_maps
+
+
+def _results_from_json(
+    entries: list[TextEntry],
+    text: str,
+    token_maps: list[dict[str, str]] | None = None,
+) -> tuple[list[TranslationResult], ParseStats]:
     data, stats = _parse_translation_json(text)
     by_id = {str(item["id"]): str(item["target"]) for item in data if "id" in item}
     unique_files = {entry.file.as_posix() for entry in entries}
@@ -230,7 +248,7 @@ def _results_from_json(entries: list[TextEntry], text: str) -> tuple[list[Transl
     if len(unique_files) == 1:
         by_key = {str(item["key"]): str(item["target"]) for item in data if "key" in item}
     results: list[TranslationResult] = []
-    for entry in entries:
+    for i, entry in enumerate(entries):
         entry_id = text_identity_id(entry.file, entry.key)
         target = by_id.get(entry_id)
         if target is None and by_key:
@@ -238,6 +256,8 @@ def _results_from_json(entries: list[TextEntry], text: str) -> tuple[list[Transl
         if target is None:
             target = entry.source
             stats.fallback += 1
+        if token_maps and i < len(token_maps) and token_maps[i]:
+            target = _restore_protected_tokens(target, token_maps[i])
         results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context))
     return results, stats
 
@@ -463,9 +483,10 @@ class AnthropicProvider(LLMProvider):
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         self._check_stop()
+        masked_entries, token_maps = _mask_entries(entries)
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
-        max_tokens = min(_estimate_output_tokens(entries), 8192)
-        user_prompt = _user_prompt(entries, target_lang, source_lang)
+        max_tokens = min(_estimate_output_tokens(masked_entries), 8192)
+        user_prompt = _user_prompt(masked_entries, target_lang, source_lang)
         log_api_call("anthropic", "REQUEST", user_prompt, entry_count=len(entries))
         message = self.client.messages.create(
             model=self.model,
@@ -477,7 +498,7 @@ class AnthropicProvider(LLMProvider):
         log_api_call("anthropic", "RESPONSE", text, entry_count=len(entries))
         if getattr(message, "stop_reason", None) == "max_tokens":
             raise ValueError("Anthropic response truncated (max_tokens); retry with smaller batch")
-        results, _stats = _results_from_json(entries, text)
+        results, _stats = _results_from_json(masked_entries, text, token_maps)
         return results
 
 
@@ -515,8 +536,9 @@ class OpenAIProvider(LLMProvider):
 
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         self._check_stop()
+        masked_entries, token_maps = _mask_entries(entries)
         system_prompt = _build_system_prompt(target_lang, self.glossary_block)
-        user_prompt = _user_prompt(entries, target_lang, source_lang)
+        user_prompt = _user_prompt(masked_entries, target_lang, source_lang)
         log_api_call("openai", "REQUEST", user_prompt, entry_count=len(entries))
         response = self.client.chat.completions.create(
             model=self.model,
@@ -542,7 +564,7 @@ class OpenAIProvider(LLMProvider):
             finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
             if finish == "length":
                 raise ValueError("OpenAI response truncated (finish_reason=length); retry with smaller batch")
-        results, _stats = _results_from_json(entries, text)
+        results, _stats = _results_from_json(masked_entries, text, token_maps)
         return results
 
 
