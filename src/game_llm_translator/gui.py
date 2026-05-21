@@ -54,6 +54,7 @@ from .rpg_maker import (
     extract_rpg_maker_mz,
     normalize_gui_game_type,
 )
+from .unity_setup import detect_unity_bare, install_xunity, uninstall_xunity, xunity_install_status, xunity_manifest_path
 from .rpg_maker_cheat import (
     apply_cheat,
     cheat_manifest_path,
@@ -76,6 +77,7 @@ class WorkerSignals(QObject):
     info = Signal(str, str)
     refresh_backups = Signal()
     refresh_cheat = Signal()
+    refresh_xunity = Signal()
     set_text = Signal(str, str)
 
 
@@ -115,6 +117,7 @@ class TranslatorGUI(QMainWindow):
         self.signals.info.connect(self._on_info)
         self.signals.refresh_backups.connect(self.refresh_backups)
         self.signals.refresh_cheat.connect(self.refresh_cheat_status)
+        self.signals.refresh_xunity.connect(self.refresh_xunity_status)
         self.signals.set_text.connect(self._on_set_text)
 
         self._build_ui()
@@ -122,6 +125,7 @@ class TranslatorGUI(QMainWindow):
         self._update_api_fields()
         self.refresh_backups()
         self.refresh_cheat_status()
+        self.refresh_xunity_status()
 
     def _set_window_icon(self) -> None:
         try:
@@ -451,6 +455,26 @@ class TranslatorGUI(QMainWindow):
         r.addLayout(r_row)
         outer.addWidget(risky)
 
+        xunity = QGroupBox("BepInEx + XUnity.AutoTranslator (Unity games)")
+        xu = QVBoxLayout(xunity)
+        xu_label = QLabel(
+            "Automatically installs BepInEx + XUnity.AutoTranslator into a Unity game.\n"
+            "After installing: run the game once so XUnity collects text, then scan again."
+        )
+        xu_label.setWordWrap(True)
+        xu.addWidget(xu_label)
+        self.xunity_status_label = QLabel("XUnity: no game selected")
+        self.xunity_status_label.setWordWrap(True)
+        self.xunity_status_label.setStyleSheet("color: #555;")
+        xu.addWidget(self.xunity_status_label)
+        xu_row = QHBoxLayout()
+        xu_row.addWidget(self._action_button("Install BepInEx + XUnity...", self.install_xunity_plugin))
+        xu_row.addWidget(self._action_button("Uninstall XUnity", self.uninstall_xunity_plugin))
+        xu_row.addWidget(self._action_button("Refresh", self.refresh_xunity_status))
+        xu_row.addStretch()
+        xu.addLayout(xu_row)
+        outer.addWidget(xunity)
+
         cheat = QGroupBox("Cheat plugin (RPG Maker MV/MZ)")
         c = QVBoxLayout(cheat)
         c_label = QLabel("Installs RPG Maker MV/MZ Cheat UI Plugin. Toggle in game: Ctrl+C. Remove uses this app's manifest only.")
@@ -636,6 +660,7 @@ class TranslatorGUI(QMainWindow):
             self._set_default_work_paths(Path(value))
             self.refresh_backups()
             self.refresh_cheat_status()
+            self.refresh_xunity_status()
 
     def _choose_glossary(self) -> None:
         value, _ = QFileDialog.getOpenFileName(self, "Select glossary CSV", self.glossary_path_edit.text(), "CSV files (*.csv);;All files (*)")
@@ -804,6 +829,8 @@ class TranslatorGUI(QMainWindow):
             self.scan_summary_label.setText(value)
         elif target == "cheat_status":
             self.cheat_status_label.setText(value)
+        elif target == "xunity_status":
+            self.xunity_status_label.setText(value)
         elif target == "out_dir":
             self.out_dir_edit.setText(value)
         elif target == "game_type":
@@ -1167,6 +1194,7 @@ class TranslatorGUI(QMainWindow):
                 self._log(f"WARN: {warning}")
             self.signals.refresh_backups.emit()
             self.signals.refresh_cheat.emit()
+            self.signals.refresh_xunity.emit()
         self._run("scan game", job)
 
     def auto_translate(self) -> None:
@@ -1315,6 +1343,80 @@ class TranslatorGUI(QMainWindow):
             self._log(f"Removed cheat ({len(manifest.files)} tracked files)")
             self.signals.refresh_cheat.emit()
         self._run("remove cheat", job)
+
+    def refresh_xunity_status(self) -> None:
+        v = self.game_dir_edit.text().strip()
+        if not v:
+            self.xunity_status_label.setText("XUnity: no game selected")
+            return
+        gd = Path(v)
+        if not gd.exists():
+            self.xunity_status_label.setText("XUnity: game folder not found")
+            return
+        try:
+            s = xunity_install_status(gd)
+        except Exception as exc:
+            self.xunity_status_label.setText(f"XUnity status error: {exc}")
+            return
+        status = s.get("status", "")
+        if status == "installed":
+            has_txt = s.get("has_translation_dir", False)
+            txt_note = " | Translation folder present — ready to scan!" if has_txt else " | Run game once to collect text"
+            self.xunity_status_label.setText(
+                f"XUnity installed: BepInEx {s['bepinex_tag']}, XUnity {s['xunity_tag']}{txt_note}"
+            )
+            self.xunity_status_label.setStyleSheet("color: #1a7a1a;")
+        elif status == "manual":
+            has_txt = s.get("has_translation_dir", False)
+            txt_note = " | Translation folder present" if has_txt else " | Run game once to collect text"
+            self.xunity_status_label.setText(f"BepInEx detected (manual install){txt_note}")
+            self.xunity_status_label.setStyleSheet("color: #7a6000;")
+        elif status == "not_installed":
+            self.xunity_status_label.setText("XUnity: not installed — click 'Install BepInEx + XUnity...' to set up")
+            self.xunity_status_label.setStyleSheet("color: #555;")
+        else:
+            self.xunity_status_label.setText("XUnity: not a Unity game (RPG Maker or unknown engine)")
+            self.xunity_status_label.setStyleSheet("color: #555;")
+
+    def install_xunity_plugin(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+        except Exception as exc:
+            QMessageBox.critical(self, "Install XUnity", str(exc))
+            return
+        msg = (
+            f"Install BepInEx + XUnity.AutoTranslator into:\n{game_dir}\n\n"
+            "This will download ~30MB from GitHub and extract files into the game folder.\n"
+            "After installing, run the game ONCE so XUnity collects text, then scan again."
+        )
+        if QMessageBox.question(self, "Install BepInEx + XUnity", msg) != QMessageBox.StandardButton.Yes:
+            return
+        target_lang = self.target_lang_edit.text().strip() or "vi"
+
+        def job() -> None:
+            manifest = install_xunity(
+                game_dir,
+                progress=lambda m: (self._check_stopped(), self._log(m))[1],
+                target_lang=target_lang,
+            )
+            self._log(f"BepInEx {manifest.bepinex_tag} + XUnity {manifest.xunity_tag} installed ({len(manifest.files)} files)")
+            self.signals.refresh_xunity.emit()
+        self._run("install xunity", job)
+
+    def uninstall_xunity_plugin(self) -> None:
+        try:
+            game_dir = self._game_dir_path()
+        except Exception as exc:
+            QMessageBox.critical(self, "Uninstall XUnity", str(exc))
+            return
+        if QMessageBox.question(self, "Uninstall XUnity", f"Remove BepInEx + XUnity from {game_dir}?") != QMessageBox.StandardButton.Yes:
+            return
+
+        def job() -> None:
+            manifest = uninstall_xunity(game_dir, progress=lambda m: (self._check_stopped(), self._log(m))[1])
+            self._log(f"XUnity uninstalled ({len(manifest.files)} tracked files removed)")
+            self.signals.refresh_xunity.emit()
+        self._run("uninstall xunity", job)
 
     def edit_table(self) -> None:
         path = Path(self.translations_csv_edit.text())

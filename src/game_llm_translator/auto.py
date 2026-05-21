@@ -13,6 +13,7 @@ from .translate_pipeline import TranslateOptions, dedupe_results, run_translate
 from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, extract_rpg_maker_detailed, is_supported_json_engine
 from .path_utils import timestamped_unique_path
 from .xunity import apply_xunity, detect_xunity, extract_xunity
+from .unity_setup import detect_unity_bare
 
 
 def _data_dir(game_dir: Path) -> Path:
@@ -24,6 +25,8 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
     xunity_dir = detect_xunity(game_dir)
     if engine is None and xunity_dir is not None:
         engine = "unity-xunity"
+    elif engine is None and detect_unity_bare(game_dir):
+        engine = "unity-bare"
     data_dir = _data_dir(game_dir)
     json_files = sorted(data_dir.glob("*.json")) if data_dir.exists() else []
     extract_warnings: list[str] = []
@@ -48,7 +51,12 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
         "unsupported_reason": (
             f"RPG Maker {engine.upper()} (RGSS) is not supported; use MV/MZ JSON games."
             if engine in {"xp", "vx", "vx-ace"}
-            else ""
+            else (
+                "Unity game detected but XUnity.AutoTranslator is not installed. "
+                "Use 'Install BepInEx + XUnity' in the Apply tab, run the game once, then scan again."
+                if engine == "unity-bare"
+                else ""
+            )
         ),
         "extract_warnings": extract_warnings,
         "recommended_command": f'game-translator auto "{game_dir}" --provider {provider} --target {target_lang}',
