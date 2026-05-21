@@ -16,6 +16,9 @@ Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs 
 - **Translation memory**: per-game and global memory, file-locked to avoid corruption during parallel writes
 - **Atomic CSV writes**: temporary file + `os.replace`, safe against crashes during save
 - **Glossary CSV**: inject fixed terms into the LLM system prompt (GUI or `--glossary` on CLI)
+- **Correction table CSV**: post-translation find/replace rules applied after each batch (GUI or `--correction-table` on CLI)
+- **Token formatting fix**: auto-repairs LLM-introduced spaces in RPG Maker tokens (`\N [1]` → `\N[1]`, `% 1` → `%1`)
+- **Dynamic batching by character length**: limits batch size by total characters (`max_chars`) to prevent token overflow on long entries
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
 - **Cheat plugin**: install/uninstall RPG Maker MV/MZ Cheat UI Plugin (prefers optional bundled archive/cache, falls back to GitHub release)
 - **Desktop GUI** (PySide6 / Qt6):
@@ -54,7 +57,7 @@ LLM_MODEL=claude-opus-4-7
 game-translator-gui
 ```
 
-Or download the prebuilt Windows executable from [Releases](https://github.com/lamhaison123/game-llm-translator/releases).
+Or download the prebuilt executable from [Releases](https://github.com/lamhaison123/game-llm-translator/releases) (Windows and Linux builds available).
 
 GUI workflow:
 1. **Game** tab: choose game folder → Scan
@@ -82,7 +85,8 @@ game-translator auto "D:/Games/MyRPG" \
   --target Vietnamese \
   --in-place           # write directly into the game after auto backup
   --restart            # ignore existing translations and translate from scratch
-  --glossary terms.csv
+  --glossary terms.csv \
+  --correction-table corrections.csv \
   --workers 4
 ```
 
@@ -122,9 +126,25 @@ HP,HP,keep as-is
 ```
 
 In the GUI: Translate tab → Advanced → Glossary CSV → Browse.
-CLI currently has no dedicated glossary option; use the GUI if you need glossary support.
+CLI: `--glossary terms.csv`
 
 Each batch injects the glossary into the system prompt so the LLM must follow the fixed term translations.
+
+## Correction table
+
+Create a CSV with `find` and `replace` columns to fix consistent terminology after translation:
+
+```csv
+find,replace
+MP,Ma lực
+HP,Sinh lực
+Skill,Kỹ năng
+```
+
+In the GUI: Translate tab → Advanced → Correction table CSV → Browse.
+CLI: `--correction-table corrections.csv`
+
+Applied as simple string replacements after every batch (including retries).
 
 ## Provider examples
 
@@ -216,7 +236,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-143 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, translation pipeline, and fan-out dedup.
+216 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, correction table, token formatting, dynamic batching, translation pipeline, and fan-out dedup.
 
 ## Build executable
 
