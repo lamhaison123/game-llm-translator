@@ -252,10 +252,6 @@ def run_translate(
             return
         try:
             batch_results = translate_batch_with_retry(provider, batch, options.target_lang, options.source_lang, options, report)
-        except RuntimeError as exc:
-            if _is_stopped_error(exc):
-                raise
-            raise
         except Exception as exc:
             if _stopped(options):
                 raise RuntimeError(STOPPED) from exc

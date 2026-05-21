@@ -173,6 +173,7 @@ def _response_preview(text: str, limit: int = 300) -> str:
 class ParseStats:
     parsed: int = 0
     skipped: int = 0
+    fallback: int = 0
 
 
 _INVALID_BACKSLASH_RE = re.compile(r'\\(?!["\\/ \bfnrtu]|u[0-9a-fA-F]{4})')
@@ -236,6 +237,7 @@ def _results_from_json(entries: list[TextEntry], text: str) -> tuple[list[Transl
             target = by_key.get(entry.key)
         if target is None:
             target = entry.source
+            stats.fallback += 1
         results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context))
     return results, stats
 
@@ -475,7 +477,9 @@ class AnthropicProvider(LLMProvider):
         log_api_call("anthropic", "RESPONSE", text, entry_count=len(entries))
         if getattr(message, "stop_reason", None) == "max_tokens":
             raise ValueError("Anthropic response truncated (max_tokens); retry with smaller batch")
-        results, _stats = _results_from_json(entries, text)
+        results, stats = _results_from_json(entries, text)
+        if stats.fallback:
+            log_event(f"LLM missed {stats.fallback}/{len(entries)} entries (fallback to source)", level="WARN")
         return results
 
 
@@ -540,7 +544,9 @@ class OpenAIProvider(LLMProvider):
             finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
             if finish == "length":
                 raise ValueError("OpenAI response truncated (finish_reason=length); retry with smaller batch")
-        results, _stats = _results_from_json(entries, text)
+        results, stats = _results_from_json(entries, text)
+        if stats.fallback:
+            log_event(f"LLM missed {stats.fallback}/{len(entries)} entries (fallback to source)", level="WARN")
         return results
 
 

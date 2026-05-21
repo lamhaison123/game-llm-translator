@@ -18,6 +18,6 @@ def translation_warnings(source: str, target: str) -> list[str]:
     tgt_newlines = target.count("\n")
     if src_newlines and tgt_newlines != src_newlines:
         warnings.append(f"newline count mismatch ({src_newlines} vs {tgt_newlines})")
-    if len(target) > len(source) * 4 and len(source) < 80:
+    if len(target) > len(source) * 3 and len(source) < 120:
         warnings.append("translation much longer than source (possible UI overflow)")
     return warnings

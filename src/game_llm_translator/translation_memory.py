@@ -35,7 +35,7 @@ def lookup_memory_value(
     legacy = memory_lookup_key(source, "", target_lang, source_lang)
     if legacy in memory:
         return memory[legacy]
-    return memory.get(source)
+    return None
 
 
 def load_memory(paths: list[Path], target_lang: str, source_lang: str | None = None) -> dict[str, str]:
@@ -60,8 +60,6 @@ def load_memory(paths: list[Path], target_lang: str, source_lang: str | None = N
                     continue
                 key = memory_lookup_key(source, context, target_lang, source_lang)
                 memory[key] = target
-                if not context.strip():
-                    memory[source] = target
     return memory
 
 
