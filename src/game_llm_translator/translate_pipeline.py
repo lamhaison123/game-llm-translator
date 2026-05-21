@@ -126,6 +126,8 @@ _REFUSAL_PATTERNS = (
     "我无法", "我不能", "无法给", "I cannot", "I'm unable", "I am unable",
     "I can't", "I apologize", "content policy", "violates", "against my",
     "as an ai", "as a language model",
+    "thinking about your request", "processing your request",
+    "let me think", "let me process",
 )
 
 
