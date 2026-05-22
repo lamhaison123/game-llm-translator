@@ -195,7 +195,7 @@ class ParseStats:
     fallback: int = 0
 
 
-_INVALID_BACKSLASH_RE = re.compile(r'\\(?!["\\/ \bfnrtu]|u[0-9a-fA-F]{4})')
+_INVALID_BACKSLASH_RE = re.compile(r'\\(?!["\\/bfnrtu]|u[0-9a-fA-F]{4})')
 
 _MOJIBAKE_RE = re.compile(r'[\xc0-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}|[\xf0-\xf7][\x80-\xbf]{3}')
 
@@ -222,7 +222,7 @@ def _repair_invalid_escapes(text: str) -> str:
     \\N, \\V, \\C inside a JSON string value, which are invalid JSON escapes.
     This replaces e.g. \\N -> \\\\N so that json.loads can parse the response.
     """
-    return _INVALID_BACKSLASH_RE.sub('\\\\\\\\', text)
+    return _INVALID_BACKSLASH_RE.sub(r'\\\\', text)
 
 
 def _parse_translation_json(text: str) -> tuple[list[dict[str, Any]], ParseStats]:

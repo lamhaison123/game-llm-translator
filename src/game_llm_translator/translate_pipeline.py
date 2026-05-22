@@ -319,8 +319,13 @@ def run_translate(
     translated_count = len(results)
     failed_batches: list[list[TextEntry]] = []
 
+    def _fanout_entry(e: TextEntry) -> list[TextEntry]:
+        if options.dedupe_by_source:
+            return groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e])
+        return [e]
+
     def process_batch(batch: list[TextEntry]) -> None:
-        nonlocal translated_count, results
+        nonlocal translated_count
         if _stopped(options):
             return
         batch_provider = provider if provider is not None else _make_provider(options, glossary_block)
@@ -335,16 +340,18 @@ def run_translate(
                 _log(options, f"WARN: LLM refused batch (content filter, fallback to source): {str(exc)[:120]}")
                 with results_lock:
                     for e in batch:
-                        for entry in groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e]):
+                        for entry in _fanout_entry(e):
                             results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
-                    results = dedupe_results(results, wanted_ids)
+                    deduped = dedupe_results(results, wanted_ids)
+                    results.clear()
+                    results.extend(deduped)
                     save_results(results, translations_csv)
             else:
                 _log(options, f"Batch failed (deferred): {exc}")
                 with results_lock:
                     failed_batches.append(batch)
             with results_lock:
-                translated_count += sum(len(groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e])) for e in batch)
+                translated_count += sum(len(_fanout_entry(e)) for e in batch)
                 if on_progress:
                     on_progress(min(translated_count, len(entries)), len(entries))
             return
@@ -372,7 +379,9 @@ def run_translate(
         with results_lock:
             translated_count += len(expanded)
             results.extend(expanded)
-            results = dedupe_results(results, wanted_ids)
+            deduped = dedupe_results(results, wanted_ids)
+            results.clear()
+            results.extend(deduped)
             save_results(results, translations_csv)
             if options.save_memory:
                 sm = save_memory(translations_csv.parent / "translation_memory.csv", batch_results, options.target_lang, options.source_lang, options.provider)
@@ -429,7 +438,7 @@ def run_translate(
 
             def retry_sub(sub: list[TextEntry]) -> None:
                 """Recursively split and retry until batch size == 1 or success."""
-                nonlocal results
+                nonlocal translated_count
                 if not sub or _stopped(options):
                     return
                 try:
@@ -445,7 +454,9 @@ def run_translate(
                         ]
                     with results_lock:
                         results.extend(expanded)
-                        results = dedupe_results(results, wanted_ids)
+                        deduped = dedupe_results(results, wanted_ids)
+                        results.clear()
+                        results.extend(deduped)
                         save_results(results, translations_csv)
                     _log(options, f"Recovered {len(expanded)} entries")
                 except Exception as exc:
@@ -455,9 +466,11 @@ def run_translate(
                         _log(options, f"WARN: LLM refused sub-batch {len(sub)} entries (content filter, fallback to source)")
                         with results_lock:
                             for e in sub:
-                                for entry in groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e]):
+                                for entry in _fanout_entry(e):
                                     results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
-                            results = dedupe_results(results, wanted_ids)
+                            deduped = dedupe_results(results, wanted_ids)
+                            results.clear()
+                            results.extend(deduped)
                             save_results(results, translations_csv)
                         return
                     if len(sub) > 1:
@@ -470,9 +483,11 @@ def run_translate(
                         _log(options, f"Single entry still failed (keeping source): {exc}")
                         with results_lock:
                             entry = sub[0]
-                            for e in groups.get(rep_identity_to_group.get(text_identity(entry.file, entry.key), dedupe_group_key(entry)), [entry]):
+                            for e in _fanout_entry(entry):
                                 results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
-                            results = dedupe_results(results, wanted_ids)
+                            deduped = dedupe_results(results, wanted_ids)
+                            results.clear()
+                            results.extend(deduped)
                             save_results(results, translations_csv)
 
             for batch in failed_batches:

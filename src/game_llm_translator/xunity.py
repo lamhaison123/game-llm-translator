@@ -61,13 +61,14 @@ def _iter_xunity_text_files(translation_dir: Path) -> Iterator[Path]:
             yield txt
 
 
-def extract_xunity(game_dir: Path, skip_translated: bool = True) -> list[TextEntry]:
+def extract_xunity(game_dir: Path, skip_translated: bool = False) -> list[TextEntry]:
     """Read all XUnity translation files and return entries that need translation.
 
     Each entry's `key` is the original text itself (used as lookup key on apply).
-    By default (skip_translated=True), entries that already have a non-empty translation
-    in the source .txt file are skipped — they don't need to be sent to the LLM again.
-    Pass skip_translated=False to extract all entries regardless.
+    By default (skip_translated=False), all translatable entries are extracted,
+    including those that already have a translation — useful for overwriting
+    low-quality auto-translations. Pass skip_translated=True to skip entries
+    that already have a non-empty translation in the source .txt file.
     """
     translation_dir = detect_xunity(game_dir)
     if translation_dir is None:
@@ -106,24 +107,32 @@ def apply_xunity(results: list[TranslationResult], output_dir: Path) -> None:
         by_file.setdefault(r.file, {})[r.source] = r.target
 
     for source_file, translations in by_file.items():
-        try:
-            original_text = source_file.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError):
-            continue
-        out_lines: list[str] = []
-        for line in original_text.splitlines():
-            parsed = _parse_line(line)
-            if parsed is None:
-                out_lines.append(line)
-                continue
-            original, _ = parsed
-            new_target = translations.get(original)
-            if new_target is None or not new_target.strip():
-                out_lines.append(line)
-            else:
-                out_lines.append(f"{original}={new_target}")
         translation_root = next((parent for parent in source_file.parents if parent.name == "Translation"), None)
         relative = source_file.relative_to(translation_root) if translation_root is not None else Path(source_file.name)
         target = output_dir / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+        try:
+            original_text = source_file.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            original_text = None
+        if original_text is not None:
+            out_lines: list[str] = []
+            for line in original_text.splitlines():
+                parsed = _parse_line(line)
+                if parsed is None:
+                    out_lines.append(line)
+                    continue
+                original, _ = parsed
+                new_target = translations.get(original)
+                if new_target is None or not new_target.strip():
+                    out_lines.append(line)
+                else:
+                    out_lines.append(f"{original}={new_target}")
+            target.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+        else:
+            out_lines: list[str] = []
+            for original, new_target in translations.items():
+                if new_target.strip():
+                    out_lines.append(f"{original}={new_target}")
+            if out_lines:
+                target.write_text("\n".join(out_lines) + "\n", encoding="utf-8")

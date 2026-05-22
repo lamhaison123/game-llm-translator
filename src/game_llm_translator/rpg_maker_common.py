@@ -304,9 +304,12 @@ def _parse_path(path: str) -> list[str | int]:
             if token:
                 parts.append(token)
                 token = ""
-            end = path.index("]", i)
-            parts.append(int(path[i + 1:end]))
-            i = end
+            end = path.find("]", i)
+            if end == -1:
+                token += char
+            else:
+                parts.append(int(path[i + 1:end]))
+                i = end
         else:
             token += char
         i += 1
@@ -390,4 +393,4 @@ def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
             raise ValueError(f"No valid translation rows for {file}: {details}")
         target = _apply_output_path(file, output_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        target.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")

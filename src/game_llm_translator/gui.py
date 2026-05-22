@@ -79,6 +79,7 @@ class WorkerSignals(QObject):
     refresh_cheat = Signal()
     refresh_xunity = Signal()
     set_text = Signal(str, str)
+    set_checked = Signal(str, bool)
 
 
 def _resource_dir(name: str) -> Path:
@@ -119,6 +120,7 @@ class TranslatorGUI(QMainWindow):
         self.signals.refresh_cheat.connect(self.refresh_cheat_status)
         self.signals.refresh_xunity.connect(self.refresh_xunity_status)
         self.signals.set_text.connect(self._on_set_text)
+        self.signals.set_checked.connect(self._on_set_checked)
 
         self._build_ui()
         self._apply_theme(self.config.get("theme", "light"))
@@ -673,11 +675,19 @@ class TranslatorGUI(QMainWindow):
         if value:
             self.correction_table_path_edit.setText(value)
 
-    def _set_default_work_paths(self, game_dir: Path) -> None:
+    def _set_default_work_paths(self, game_dir: Path, use_signals: bool = False) -> None:
         work = game_dir / "translator_work"
-        self.texts_csv_edit.setText(str(work / "texts.csv"))
-        self.translations_csv_edit.setText(str(work / "translations.csv"))
-        self.out_dir_edit.setText(str(work / "translated_data"))
+        texts = str(work / "texts.csv")
+        translations = str(work / "translations.csv")
+        out = str(work / "translated_data")
+        if use_signals:
+            self.signals.set_text.emit("texts_csv", texts)
+            self.signals.set_text.emit("translations_csv", translations)
+            self.signals.set_text.emit("out_dir", out)
+        else:
+            self.texts_csv_edit.setText(texts)
+            self.translations_csv_edit.setText(translations)
+            self.out_dir_edit.setText(out)
 
     def _game_dir_path(self) -> Path:
         value = self.game_dir_edit.text().strip()
@@ -834,8 +844,16 @@ class TranslatorGUI(QMainWindow):
             self.xunity_status_label.setText(value)
         elif target == "out_dir":
             self.out_dir_edit.setText(value)
+        elif target == "texts_csv":
+            self.texts_csv_edit.setText(value)
+        elif target == "translations_csv":
+            self.translations_csv_edit.setText(value)
         elif target == "game_type":
             self.game_type_combo.setCurrentText(value)
+
+    def _on_set_checked(self, target: str, checked: bool) -> None:
+        if target == "restart":
+            self.restart_check.setChecked(checked)
 
     def _set_running_ui(self, running: bool, name: str = "") -> None:
         for btn in self.action_buttons:
@@ -1078,7 +1096,7 @@ class TranslatorGUI(QMainWindow):
                 else:
                     p.unlink()
                 self._log(f"Deleted -> {p}")
-            self.restart_check.setChecked(True)
+            self.signals.set_checked.emit("restart", True)
         self._run("clear old translation", job)
 
     def clear_game_memory(self) -> None:
@@ -1180,7 +1198,7 @@ class TranslatorGUI(QMainWindow):
             game_dir = self._game_dir_path()
             self.signals.set_text.emit("scan_summary", "Scanning...")
             report = analyze_game(game_dir, self.provider_combo.currentText(), self.target_lang_edit.text())
-            self._set_default_work_paths(game_dir)
+            self._set_default_work_paths(game_dir, use_signals=True)
             if report["engine"] in {"mv", "mz", "mv-mz"}:
                 self.signals.set_text.emit("game_type", engine_to_gui_game_type(str(report["engine"])))
             elif report["engine"] == "unity-xunity":
@@ -1202,7 +1220,7 @@ class TranslatorGUI(QMainWindow):
         def job() -> None:
             source = None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text()
             game_dir = self._game_dir_path()
-            self._set_default_work_paths(game_dir)
+            self._set_default_work_paths(game_dir, use_signals=True)
             out = auto_translate_game(
                 game_dir=game_dir,
                 target_lang=self.target_lang_edit.text(),
@@ -1216,6 +1234,7 @@ class TranslatorGUI(QMainWindow):
                 in_place=False,
                 restart=self.restart_check.isChecked(),
                 use_memory=self.reuse_memory_check.isChecked(),
+                save_memory=self.save_memory_check.isChecked(),
                 glossary_path=Path(self.glossary_path_edit.text()) if self.glossary_path_edit.text().strip() else None,
                 workers=max(1, min(8, int(self.workers_spin.value()))),
                 progress=lambda m: (self._check_stopped(), self._log(m))[1],
