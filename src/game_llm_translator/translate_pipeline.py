@@ -9,11 +9,11 @@ from pathlib import Path
 
 from .app_logging import log_event
 from .csv_store import load_results, save_results
-from .glossary import apply_correction_table, format_glossary_for_prompt, load_correction_table, load_glossary
+from .glossary import apply_correction_table, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories
 from .llm import LLMProvider, make_provider
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
-from .validate import translation_warnings
+from .validate import check_noun_consistency, format_noun_warnings, translation_warnings
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[int, int], None]
@@ -260,10 +260,17 @@ def run_translate(
     workers = max(1, min(8, options.workers))
     glossary_block = ""
     if options.glossary_path:
-        glossary_entries = load_glossary(options.glossary_path)
-        if glossary_entries:
-            glossary_block = format_glossary_for_prompt(glossary_entries)
-            _log(options, f"Glossary: {len(glossary_entries)} entries from {options.glossary_path}")
+        cat_entries = load_glossary_with_categories(options.glossary_path)
+        if cat_entries:
+            has_categories = any(cat for _, _, cat in cat_entries)
+            if has_categories:
+                glossary_block = format_glossary_categorized(cat_entries)
+                cat_names = sorted(set(cat for _, _, cat in cat_entries if cat))
+                _log(options, f"Glossary: {len(cat_entries)} entries from {options.glossary_path} (categories: {', '.join(cat_names)})")
+            else:
+                flat_entries = [(t, tr) for t, tr, _ in cat_entries]
+                glossary_block = format_glossary_for_prompt(flat_entries)
+                _log(options, f"Glossary: {len(flat_entries)} entries from {options.glossary_path}")
     provider = _make_provider(options, glossary_block) if workers == 1 else None
     corrections = load_correction_table(options.correction_table_path)
     if corrections:
@@ -369,7 +376,7 @@ def run_translate(
                 for r in expanded
             ]
         for item in expanded:
-            issues = translation_warnings(item.source, item.target)
+            issues = translation_warnings(item.source, item.target, item.context)
             if issues:
                 with report_lock:
                     report.placeholder_warnings += 1
@@ -501,6 +508,11 @@ def run_translate(
 
     if _stopped(options):
         _raise_if_stopped(options)
+
+    noun_issues = check_noun_consistency(results)
+    if noun_issues:
+        for msg in format_noun_warnings(noun_issues):
+            _log(options, f"CONSISTENCY: {msg}")
 
     report.translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
     report.fallback = len(entries) - report.translated
