@@ -114,43 +114,102 @@ SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, vi
 - Return a strict JSON array and nothing else. No markdown fences, no explanation, no extra text.
 - Each element must have exactly: {"id": "...", "key": "...", "target": "..."} — "id" is REQUIRED (format: file_path + separator + key).
 - If you cannot translate an item, copy the source text into target unchanged.
+- Return items in the SAME ORDER as the input.
 
 ## Translation rules
 1. Preserve ALL placeholders, variables, control codes, escape sequences, and tags exactly as-is.
-   Examples: \\N[1], \\V[2], \\C[3], %1, %s, {name}, <b>, </b>, \n, \\!, \\., \\|
-2. Keep line breaks (\\n, actual newlines) where they appear in the source.
-3. Translate naturally for the target language — avoid word-for-word literal translation.
+   RPG Maker tokens: \\N[1] (actor name), \\V[2] (variable), \\C[3] (color), \\i[25] (icon), \\! (wait), \\. (short wait), \\| (long wait), \\{ (font up), \\} (font down), \\$ (gold window).
+   General tokens: %1, %2, %s, %d, {name}, {0}, <b>, </b>, \n.
+   NEVER reorder, remove, or modify these tokens. Keep them in their logical position in the target language sentence.
+2. Keep line breaks (\\n, actual newlines) where they appear in the source. Do not merge or split lines.
+3. Translate naturally for the target language — avoid word-for-word literal translation. Reorder grammar naturally while keeping all tokens.
 4. Match the register and tone of the source: formal speech stays formal, casual stays casual, dramatic stays dramatic.
-5. For character dialogue: use natural spoken language, not written/formal prose.
-6. For item/skill names and descriptions: be concise and consistent with RPG terminology.
+5. For character dialogue: use natural spoken language, not written/formal prose. Respect character voice indicated by context.
+6. For item/skill names and descriptions: be concise and consistent with RPG terminology. Keep names short enough to fit UI.
 7. For UI text (menu labels, button text): keep it short and clear.
-8. For battle messages: keep them punchy and action-oriented.
+8. For battle messages: keep them punchy and action-oriented. The %1 and %2 placeholders in messages like "%1：%2" refer to the user and skill name — preserve this pattern exactly.
+9. For skill/item descriptions containing \\i[N] icon tokens: the icon token and the text after it form a single phrase — translate the text but keep the icon token in place.
 
 ## Context usage
-- Use context_text only to infer speaker identity, tone, pronouns, and terminology consistency.
+- The "context" field describes the type of text (e.g. rpg_maker_event_text, rpg_maker_skills_name, rpg_maker_mz_plugin_*).
+- The "context_text" field contains surrounding dialogue lines from the same event for speaker/tone inference.
+- Use context_text to infer speaker identity, tone, pronouns, and terminology consistency.
 - Do NOT translate context_text unless it is also the item's source field.
+- Maintain consistent terminology for the same game concepts across all items in the batch (e.g. always use the same word for "skill", "item", "quest").
+
+## Common pitfalls
+- Do NOT add explanations, notes, or prefixes like "Translation:" to target text.
+- Do NOT translate placeholder tokens — \\N[1] stays as \\N[1], not a name.
+- If a source string is only tokens/whitespace (e.g. "\\N[1]"), copy it unchanged.
+- Preserve full-width punctuation (：。、「」 etc.) only if appropriate for the target language; convert to target-language equivalents.
 """
 
 _LANG_SPECIFIC_RULES: dict[str, str] = {
     "vi": """## Vietnamese-specific rules
-- Use natural Vietnamese pronouns appropriate to the character's age/status/relationship.
+- Use natural Vietnamese pronouns appropriate to the character's age/status/relationship (tao-mày, anh-em, chú-cháu, v.v.).
 - Avoid overly formal or stiff phrasing that sounds machine-translated.
-- Keep RPG terms consistent throughout the batch (e.g. always use the same word for "skill", "item", "quest").
+- Keep RPG terms consistent throughout the batch (e.g. always use the same word for "skill"→"kỹ năng", "item"→"vật phẩm", "quest"→"nhiệm vụ").
 - Honorifics and address forms should match the character's personality and social role.
+- For battle messages with %1/%2: keep the format, e.g. "%1 sử dụng %2".
+- CJK full-width punctuation (：。、「」) should be converted to Vietnamese equivalents (: . "").
 """,
     "ja": """## Japanese-specific rules
 - Use appropriate keigo level matching the character's social role and relationship.
-- Preserve sentence-final particles and speech patterns that define character personality.
+- Preserve sentence-final particles and speech patterns that define character personality (だ/である/だわ/の/わ/ぜ/ぞ etc.).
 - Keep katakana loanwords for modern/foreign concepts; use kanji/kana for traditional RPG terms.
+- For item/skill descriptions: keep concise; maintain existing \\i[N] icon token positions.
 """,
     "zh": """## Chinese-specific rules
 - Use Simplified Chinese unless the context clearly calls for Traditional.
 - Keep RPG terminology consistent (技能, 物品, 任务, etc.) throughout the batch.
 - Match formality level to the character's role and the scene's tone.
+- Preserve CJK punctuation style (：。、「」) consistent with Chinese conventions.
 """,
     "ko": """## Korean-specific rules
 - Use appropriate speech level (존댓말/반말) matching the character's relationship and personality.
+- Keep RPG terms consistent throughout the batch (스킬, 아이템, 퀘스트).
+- Preserve sentence-final particles that characterize speech style.
+""",
+    "en": """## English-specific rules
+- Use natural English phrasing; avoid translation-ese or overly literal constructions.
+- Keep RPG terms consistent (skill, item, quest, equipment, etc.).
+- For character dialogue: match tone and formality level of the original.
+- For UI text: use concise, standard gaming terminology.
+""",
+    "th": """## Thai-specific rules
+- Use natural Thai phrasing appropriate to context (formal for UI, casual for dialogue).
 - Keep RPG terms consistent throughout the batch.
+- Maintain polite particles (ครับ/ค่ะ) matching character gender/role when inferable.
+""",
+    "id": """## Indonesian-specific rules
+- Use natural Bahasa Indonesia; avoid overly formal or stiff phrasing.
+- Keep RPG terms consistent throughout the batch (skill→"keterampilan" or "skill", item→"barang").
+- Match tone and register to the character's personality.
+""",
+    "pt": """## Portuguese-specific rules
+- Use natural Brazilian Portuguese unless European context is clear.
+- Keep RPG terms consistent throughout the batch.
+- Match formality level to character role and scene tone.
+""",
+    "ru": """## Russian-specific rules
+- Use natural Russian with appropriate grammatical cases.
+- Keep RPG terms consistent throughout the batch.
+- Match formality (ты/Вы) to the character relationship and scene.
+""",
+    "fr": """## French-specific rules
+- Use natural French; avoid anglicisms unless standard in gaming context.
+- Keep RPG terms consistent throughout the batch.
+- Match register (tu/vous) to character relationship.
+""",
+    "de": """## German-specific rules
+- Use natural German; follow standard gaming localization conventions.
+- Keep RPG terms consistent throughout the batch.
+- Match register (du/Sie) to character relationship.
+""",
+    "es": """## Spanish-specific rules
+- Use natural Spanish; standard Latin American Spanish unless context requires European.
+- Keep RPG terms consistent throughout the batch.
+- Match register (tú/usted) to character relationship.
 """,
 }
 
@@ -167,9 +226,59 @@ def _build_system_prompt(target_lang: str | None, glossary_block: str = "") -> s
 SYSTEM_PROMPT = SYSTEM_PROMPT_BASE  # kept for backward compat with tests
 
 
+_CONTEXT_HINTS: dict[str, str] = {
+    "rpg_maker_event_text": "dialogue",
+    "rpg_maker_choice": "choice option",
+    "rpg_maker_map_display_name": "map name",
+    "rpg_maker_skills_name": "skill name",
+    "rpg_maker_skills_description": "skill description",
+    "rpg_maker_skills_message1": "battle message",
+    "rpg_maker_skills_message2": "battle message",
+    "rpg_maker_items_name": "item name",
+    "rpg_maker_items_description": "item description",
+    "rpg_maker_weapons_name": "weapon name",
+    "rpg_maker_weapons_description": "weapon description",
+    "rpg_maker_armors_name": "armor name",
+    "rpg_maker_armors_description": "armor description",
+    "rpg_maker_actors_name": "actor name",
+    "rpg_maker_actors_nickname": "actor nickname",
+    "rpg_maker_actors_profile": "actor profile",
+    "rpg_maker_enemies_name": "enemy name",
+    "rpg_maker_states_name": "state name",
+    "rpg_maker_states_message1": "state message",
+    "rpg_maker_states_message2": "state message",
+    "rpg_maker_states_message3": "state message",
+    "rpg_maker_states_message4": "state message",
+    "rpg_maker_classes_name": "class name",
+    "rpg_maker_system_gameTitle": "game title",
+    "rpg_maker_system_currencyUnit": "currency unit",
+    "rpg_maker_terms_basic": "term",
+    "rpg_maker_terms_commands": "command",
+    "rpg_maker_terms_params": "parameter name",
+    "rpg_maker_terms_messages": "system message",
+}
+
+
+def _context_hint(context: str) -> str:
+    prefix = context.split("_plugin_")[0] if "_plugin_" in context else context
+    hint = _CONTEXT_HINTS.get(prefix)
+    if hint:
+        return hint
+    if "_plugin_" in context:
+        return "plugin text"
+    return context
+
+
 def _user_prompt(entries: Iterable[TextEntry], target_lang: str, source_lang: str | None) -> str:
     payload = [
-        {"id": text_identity_id(e.file, e.key), "file": e.file.as_posix(), "key": e.key, "source": e.source, "context": e.context, "context_text": e.context_text}
+        {
+            "id": text_identity_id(e.file, e.key),
+            "file": e.file.as_posix(),
+            "key": e.key,
+            "source": e.source,
+            "context": _context_hint(e.context),
+            "context_text": e.context_text,
+        }
         for e in entries
     ]
     return json.dumps(

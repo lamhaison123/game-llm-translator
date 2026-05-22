@@ -139,14 +139,23 @@ def _event_context_text(value: dict[str, Any]) -> str:
     commands = value.get("list")
     if not isinstance(commands, list):
         return ""
-    lines: list[str] = []
+    parts: list[str] = []
     for command in commands:
-        if not isinstance(command, dict) or not _is_event_text_command(command):
+        if not isinstance(command, dict):
             continue
-        text = command["parameters"][0]
-        if text not in lines:
-            lines.append(text)
-    return "\n".join(lines[:12])
+        code = command.get("code")
+        params = command.get("parameters")
+        if code == 101 and isinstance(params, list) and len(params) >= 5:
+            speaker = str(params[4]) if params[4] else ""
+            if speaker and speaker not in parts:
+                parts.append(f"[{speaker}]")
+        if code in RPG_MAKER_EVENT_TEXT_CODES and isinstance(params, list) and params and _is_text(params[0]):
+            text = params[0]
+            if text not in parts:
+                parts.append(text)
+        if len(parts) >= 16:
+            break
+    return "\n".join(parts)
 
 
 def _looks_like_audio_object(value: Any) -> bool:
