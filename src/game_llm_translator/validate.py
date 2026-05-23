@@ -19,6 +19,7 @@ _NAME_CONTEXTS = frozenset({
     "rpg_maker_system_gameTitle",
     "rpg_maker_system_currencyUnit",
     "rpg_maker_speaker_name",
+    "rpg_maker_troops_name",
 })
 
 _SHORT_UI_CONTEXTS = frozenset({
@@ -39,6 +40,12 @@ _SHORT_UI_CONTEXTS = frozenset({
     "rpg_maker_system_gameTitle",
     "rpg_maker_system_currencyUnit",
     "rpg_maker_speaker_name",
+    "rpg_maker_troops_name",
+    "rpg_maker_system_elements",
+    "rpg_maker_system_weaponTypes",
+    "rpg_maker_system_armorTypes",
+    "rpg_maker_system_equipTypes",
+    "rpg_maker_system_skillTypes",
 })
 
 _DESCRIPTION_CONTEXTS = frozenset({

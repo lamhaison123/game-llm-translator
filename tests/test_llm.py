@@ -112,6 +112,20 @@ def test_mask_restore_percent_format():
     assert restored == text
 
 
+def test_mask_restore_party_member_token():
+    text = "\\P[1] attacks!"
+    masked, mapping = _mask_protected_tokens(text)
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
+def test_mask_restore_underscore_token():
+    text = "Hello\\_World"
+    masked, mapping = _mask_protected_tokens(text)
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
 def test_restore_case_insensitive_token():
     """If LLM lowercases the placeholder token, it should still be restored."""
     text = "\\V[1]"

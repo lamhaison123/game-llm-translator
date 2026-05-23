@@ -218,11 +218,14 @@ def detect_rpg_maker(game_dir: Path) -> str | None:
     return None
 
 
-def _event_context_text(value: dict[str, Any]) -> str:
+def _event_context_text(value: dict[str, Any], surrounding_commands: list[dict[str, Any]] | None = None) -> str:
     commands = value.get("list")
     if not isinstance(commands, list):
-        return ""
+        commands = surrounding_commands if surrounding_commands else None
+        if not commands:
+            return ""
     parts: list[str] = []
+    current_speaker = ""
     for command in commands:
         if not isinstance(command, dict):
             continue
@@ -230,15 +233,21 @@ def _event_context_text(value: dict[str, Any]) -> str:
         params = command.get("parameters")
         if code == 101 and isinstance(params, list) and len(params) >= 5:
             speaker = str(params[4]) if params[4] else ""
-            if speaker and speaker not in parts:
-                parts.append(f"[{speaker}]")
+            if speaker:
+                current_speaker = speaker
+                if f"[{speaker}]" not in parts:
+                    parts.append(f"[{speaker}]")
         if code == RPG_MAKER_CHOICE_CODE and isinstance(params, list) and params and isinstance(params[0], list):
             for choice in params[0]:
                 if isinstance(choice, str) and choice.strip() and choice not in parts:
                     parts.append(choice)
         if code in RPG_MAKER_EVENT_TEXT_CODES and isinstance(params, list) and params and _is_text(params[0]):
             text = params[0]
-            if text not in parts:
+            if current_speaker:
+                tagged = f"[{current_speaker}] {text}"
+                if tagged not in parts:
+                    parts.append(tagged)
+            elif text not in parts:
                 parts.append(text)
         if len(parts) >= 16:
             break
@@ -319,9 +328,16 @@ def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_contex
         code = value.get("code")
         params = value.get("parameters")
         if _is_event_text_command(value):
-            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[0]", source=value["parameters"][0], context="rpg_maker_event_text", context_text=inherited_context))
+            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[0]", source=value["parameters"][0], context="rpg_maker_event_text", context_text=local_context))
         if code == 101 and isinstance(params, list) and len(params) >= 5 and _is_text(params[4]):
-            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[4]", source=params[4], context="rpg_maker_speaker_name", context_text=local_context))
+            speaker_name = str(params[4])
+            speaker_context = f"[{speaker_name}]" if speaker_name else ""
+            preceding_text = local_context
+            if preceding_text:
+                context_for_speaker = f"{speaker_context}\n{preceding_text}"
+            else:
+                context_for_speaker = speaker_context
+            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[4]", source=params[4], context="rpg_maker_speaker_name", context_text=context_for_speaker))
         if _is_event_text_command(value) or (code == 101 and isinstance(params, list) and len(params) >= 5 and _is_text(params[4])):
             return entries
         if _is_choice_command(value):
@@ -347,6 +363,32 @@ def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_contex
             child_key = f"{prefix}.{key}"
             if key == "displayName":
                 _append_text_entry(entries, file, child_key, child, "rpg_maker_map_display_name", local_context)
+            elif key == "name" and _is_event_object(value):
+                pass
+            elif key == "list" and isinstance(child, list):
+                list_context = inherited_context
+                parent_obj = value
+                parent_name = parent_obj.get("name", "")
+                parent_note = parent_obj.get("note", "")
+                if parent_name or parent_note:
+                    list_parts = []
+                    if parent_name:
+                        list_parts.append(f"[Event: {parent_name}]")
+                    if parent_note:
+                        list_parts.append(f"Note: {parent_note}")
+                    list_context = "\n".join(list_parts)
+                page_cond = parent_obj.get("conditions", {}) if isinstance(parent_obj, dict) else {}
+                if isinstance(page_cond, dict):
+                    actor_id = page_cond.get("actorId", 0)
+                    if actor_id and isinstance(actor_id, int) and actor_id > 0:
+                        list_context = f"Actor {actor_id}\n{list_context}" if list_context else f"Actor {actor_id}"
+                page_context = _event_context_text({"list": child}) if isinstance(child, list) else ""
+                if page_context:
+                    if list_context:
+                        list_context = f"{list_context}\n{page_context}"
+                    else:
+                        list_context = page_context
+                entries.extend(_walk_event_json(child, file, child_key, list_context, plugin_text_extractor))
             else:
                 entries.extend(_walk_event_json(child, file, child_key, local_context, plugin_text_extractor))
     elif isinstance(value, list):

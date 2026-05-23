@@ -67,7 +67,7 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
     raise ValueError(f"Unsupported language: {language!r}. Use a known name (e.g. Vietnamese) or ISO code (vi).")
 
 TOKEN_PATTERN = re.compile(
-    r"(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|<[^<>]{1,120}>|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
+    r"(\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^_\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|<[^<>]{1,120}>|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
 )
 
 
@@ -92,7 +92,7 @@ def _restore_protected_tokens(text: str, mapping: dict[str, str]) -> str:
 _FIX_BRACKET_RE = re.compile(r'\\(\w+)\s*\[\s*(.*?)\s*\]')
 _FIX_ANGLE_RE = re.compile(r'\\(\w+)\s*<\s*(.*?)\s*>')
 _FIX_PERCENT_RE = re.compile(r'%\s*(\d+)')
-_FIX_BACKSLASH_RE = re.compile(r'\\\s*([{}\$!><\^\\])')
+_FIX_BACKSLASH_RE = re.compile(r'\\\s*([{}\$!><\^_\\])')
 
 
 def _fix_token_formatting(text: str) -> str:
@@ -108,7 +108,7 @@ def _fix_token_formatting(text: str) -> str:
     return text
 
 
-SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, visual novel, and game UI text.
+SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG Maker and visual novel text translation.
 
 ## Output format
 - Return a strict JSON array and nothing else. No markdown fences, no explanation, no extra text.
@@ -116,21 +116,37 @@ SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, vi
 - If you cannot translate an item, copy the source text into target unchanged.
 - Return items in the SAME ORDER as the input.
 
+## RPG Maker control codes — ALWAYS preserve exactly
+These tokens MUST appear in the target text unchanged. Never translate, remove, reorder, or add spaces inside them:
+- \\N[n] — Actor name substitution (e.g. \\N[1] = actor 1's name). CRITICAL: LLMs frequently corrupt this to \\N [1] or \\N[ 1]. Always output as \\N[n] with no spaces.
+- \\P[n] — Party member name substitution (e.g. \\P[1] = first party member). Same no-space rule.
+- \\V[n] — Variable value substitution.
+- \\C[n] — Text color change. \\C[0] resets to default.
+- \\I[n] — Icon index display. The icon and adjacent text form a single phrase; keep them together.
+- \\G — Currency unit display.
+- \\! — Wait for user input. \\. — Short wait (1/4 second). \\| — Long wait (1 second).
+- \\{ — Increase text size. \\} — Decrease text size.
+- \\$ — Open gold window.
+- \\/ — Escape backslash (produces a single \\).
+- \\_ — Half-width space (rare, mostly MZ).
+- %1, %2, %3… — Positional parameter substitution in System.json messages. %1 is usually the actor name, %2 is the target/skill name.
+- {name}, {0}, %s, %d — Other common placeholders.
+
 ## Translation rules
 1. Preserve ALL placeholders, variables, control codes, escape sequences, and tags exactly as-is.
-   RPG Maker tokens: \\N[1] (actor name), \\V[2] (variable), \\C[3] (color), \\i[25] (icon), \\! (wait), \\. (short wait), \\| (long wait), \\{ (font up), \\} (font down), \\$ (gold window).
-   General tokens: %1, %2, %s, %d, {name}, {0}, <b>, </b>, \n.
    NEVER reorder, remove, or modify these tokens. Keep them in their logical position in the target language sentence.
-2. Keep line breaks (\\n, actual newlines) where they appear in the source. Do not merge or split lines.
+2. Keep line breaks (\\n or actual newlines in JSON strings) exactly where they appear in the source. Do not merge or split lines.
 3. Translate naturally for the target language — avoid word-for-word literal translation. Reorder grammar naturally while keeping all tokens.
 4. Match the register and tone of the source: formal speech stays formal, casual stays casual, dramatic stays dramatic.
 5. For character dialogue: use natural spoken language, not written/formal prose. Respect character voice indicated by context_text speaker tags like [SpeakerName].
-6. For item/skill names and descriptions: be concise and consistent with RPG terminology. Keep names short enough to fit UI.
-7. For UI text (menu labels, button text): keep it short and clear.
-8. For battle messages: keep them punchy and action-oriented. The %1 and %2 placeholders in messages like "%1：%2" refer to the user and skill name — preserve this pattern exactly.
+6. For item/skill names and descriptions: be concise and consistent with RPG terminology. Names should fit UI slots (typically 12-20 characters for CJK → alphabetic translations).
+7. For UI text (menu labels, button text, commands): keep it short and clear. Use standard gaming terminology for the target language.
+8. For battle messages: keep them punchy and action-oriented. %1 is typically the actor/enemy name, %2 is the skill/item name.
 9. For skill/item descriptions containing \\i[N] icon tokens: the icon token and the text after it form a single phrase — translate the text but keep the icon token in place.
-10. For speaker names (context "speaker name"): translate character names consistently across ALL items. If a name appears in both the Actors database and dialogue, use the SAME translation. Keep proper nouns short (ideally ≤8 characters for CJK names translated to alphabetic languages).
-11. For state descriptions and messages: keep them brief and match the game's existing terminology. State messages like "%1が戦闘不能！" typically mean "%1 is knocked out!" — adapt the tone to the target language.
+10. For speaker names (context "speaker name"): translate character names consistently across ALL items in the entire batch. If a name appears in both Actors.json and dialogue, use the SAME translation.
+11. For state names, descriptions, and messages: keep them very brief. State names like "戦闘不能" → "KO" or "Knocked Out" (not "Unable to Battle"). State messages use %1 for the affected battler's name.
+12. For "note" fields containing angle-bracket plugin notetags (e.g. <ItemImage:path>, <バトルウェイト:10>): do NOT translate the tag name or its parameter if it is a number/asset path — only translate any descriptive text within the note that is player-facing. Most note tags are engine configuration and should be copied unchanged.
+13. For System.json array entries (armorTypes, elements, equipTypes, skillTypes, weaponTypes): these are short UI labels in menus. Translate them with standard RPG terminology, keeping each entry concise.
 
 ## Context usage
 - The "context" field describes the type of text. Common values:
@@ -139,12 +155,12 @@ SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, vi
   skill/item/weapon/armor/state description = database description, battle message = battle log text,
   term/command/parameter name = system UI label, system message = engine message template,
   plugin text = plugin-specific text, currency unit = money unit, game title = game title,
-  actor name/nickname/profile = character database fields.
+  actor name/nickname/profile = character database fields, troop name = enemy group name.
 - The "context_text" field contains surrounding dialogue lines from the same event page, with speaker names prefixed as [Name].
-- Use context_text to infer speaker identity, tone, pronouns, and terminology consistency.
-- Do NOT translate context_text unless it is also the item's source field.
+  Use context_text to infer speaker identity, tone, pronouns, and terminology consistency.
+- When context_text shows [SpeakerName] before a dialogue line, that speaker is the one saying the line — match their voice and personality.
 - Maintain consistent terminology for the same game concepts across all items in the batch (e.g. always use the same word for "skill", "item", "quest").
-- When context_text shows [SpeakerName], use that to determine the character's voice and pronouns for the dialogue line that follows.
+- Do NOT translate context_text unless it is also the item's source field.
 
 ## Common pitfalls
 - Do NOT add explanations, notes, or prefixes like "Translation:" to target text.
@@ -153,6 +169,7 @@ SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, vi
 - Preserve full-width punctuation (：。、「」 etc.) only if appropriate for the target language; convert to target-language equivalents.
 - Do NOT transliterate names unless the target language convention requires it (e.g. CJK to Vietnamese: keep original CJK or use established readings).
 - When translating database names (actors, enemies, items, skills, states): keep them SHORT. UI slots in RPG Maker are typically 12-20 characters wide. A name that is too long will overflow or be truncated.
+- Be careful with \\r\\n in skill description strings — these represent line breaks in the game UI. Preserve them.
 """
 
 _LANG_SPECIFIC_RULES: dict[str, str] = {
@@ -165,6 +182,10 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - CJK full-width punctuation (：。、「」) should be converted to Vietnamese equivalents (: . "").
 - For speaker names: keep CJK proper nouns as-is or use Vietnamese readings. If a character has a name in both CJK and alphabetic form, prefer the alphabetic form.
 - For state names/descriptions: keep them concise and use Vietnamese RPG terminology (độc, choáng, chết, v.v.).
+- For System.json battle messages: %1 is the battler name, %2 is the skill/name. Use natural Vietnamese: "%1 nhận %2 sát thương!" not word-for-word order from Japanese.
+- For \\\\G token (currency unit): keep it exactly as \\\\G — the game substitutes the currency name at runtime.
+- For choices: keep them short since they appear in choice windows. 2-4 words is ideal.
+- When the source text mixes Japanese control characters with Vietnamese partial translations (common in already-partially-translated games), translate the remaining Japanese text to Vietnamese and keep any already-Vietnamese text consistent.
 """,
     "ja": """## Japanese-specific rules
 - Use appropriate keigo level matching the character's social role and relationship.
@@ -271,6 +292,8 @@ _CONTEXT_HINTS: dict[str, str] = {
     "rpg_maker_terms_params": "parameter name",
     "rpg_maker_terms_messages": "system message",
     "rpg_maker_speaker_name": "speaker name",
+    "rpg_maker_troops_name": "troop name",
+    "rpg_maker_mz_plugin_text": "plugin text",
 }
 
 
@@ -279,6 +302,8 @@ def _context_hint(context: str) -> str:
     hint = _CONTEXT_HINTS.get(prefix)
     if hint:
         return hint
+    if context.startswith("rpg_maker_mz_plugin_"):
+        return "plugin text"
     if "_plugin_" in context:
         return "plugin text"
     return context
@@ -296,10 +321,20 @@ def _user_prompt(entries: Iterable[TextEntry], target_lang: str, source_lang: st
         }
         for e in entries
     ]
+    source_label = source_lang or "auto"
+    if source_label == "auto":
+        for item in payload:
+            src = item["source"]
+            if any('\u3040' <= c <= '\u30ff' for c in src):
+                source_label = "ja"
+                break
+            if any('\u4e00' <= c <= '\u9fff' or '\uac00' <= c <= '\ud7af' for c in src):
+                source_label = "zh"
+                break
     return json.dumps(
         {
             "task": "translate_game_text",
-            "source_language": source_lang or "auto",
+            "source_language": source_label,
             "target_language": target_lang,
             "items": payload,
         },

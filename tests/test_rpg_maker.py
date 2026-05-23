@@ -635,3 +635,29 @@ def test_extract_states_description(tmp_path):
     assert "Poison" in sources
     assert "Takes damage each turn." in sources
     assert "%1 is poisoned!" in sources
+
+
+def test_extract_mz_speaker_name_propagates_to_dialogue_context(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 101, "parameters": ["", 0, 0, 2, "Theresia"]},
+                            {"code": 401, "parameters": ["I will teach you."]},
+                            {"code": 401, "parameters": ["Listen carefully."]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    dialogue_entries = [e for e in entries if e.context == "rpg_maker_event_text"]
+    assert len(dialogue_entries) == 2
+    for entry in dialogue_entries:
+        assert "[Theresia]" in entry.context_text
