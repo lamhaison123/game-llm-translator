@@ -177,3 +177,57 @@ def format_glossary_categorized(entries: list[tuple[str, str, str]], max_chars: 
     if truncated:
         parts.append("(...more terms omitted to keep prompt short)\n")
     return "".join(parts)
+
+
+def build_auto_glossary(
+    results: list[tuple[str, str, str]],
+    max_entries: int = 80,
+    min_term_len: int = 1,
+    max_term_len: int = 40,
+) -> list[tuple[str, str]]:
+    """Build a glossary from confirmed translations for cross-batch consistency.
+
+    Inspired by RPGMTL's knowledge base: extract name-term pairs from completed
+    translations to inject into subsequent LLM batches for terminological consistency.
+
+    Args:
+        results: List of (source, target, context) tuples from completed translations.
+        max_entries: Maximum number of glossary entries to return.
+        min_term_len: Minimum source string length to include (skip very short/generic terms).
+        max_term_len: Maximum source string length to include (skip overly long descriptions).
+
+    Returns:
+        List of (term, translation) pairs suitable for format_glossary_for_prompt.
+    """
+    name_contexts = {
+        "rpg_maker_actors_name",
+        "rpg_maker_actors_nickname",
+        "rpg_maker_enemies_name",
+        "rpg_maker_skills_name",
+        "rpg_maker_items_name",
+        "rpg_maker_weapons_name",
+        "rpg_maker_armors_name",
+        "rpg_maker_states_name",
+        "rpg_maker_classes_name",
+        "rpg_maker_map_display_name",
+        "rpg_maker_system_gameTitle",
+        "rpg_maker_system_currencyUnit",
+        "rpg_maker_speaker_name",
+        "rpg_maker_troops_name",
+        "rpg_maker_event_text",
+        "rpg_maker_choice",
+    }
+    glossary: dict[str, str] = {}
+    for source, target, context in results:
+        if not target or not target.strip() or target == source:
+            continue
+        if context not in name_contexts:
+            continue
+        if len(source) < min_term_len or len(source) > max_term_len:
+            continue
+        if source in glossary:
+            continue
+        glossary[source] = target.strip()
+        if len(glossary) >= max_entries:
+            break
+    return list(glossary.items())

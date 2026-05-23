@@ -39,6 +39,8 @@ RPG_MAKER_ASSET_NAME_KEYS = {
 }
 RPG_MAKER_AUDIO_KEYS = {"bgm", "bgs", "me", "se", "battleBgm", "titleBgm", "victoryMe", "defeatMe"}
 RPG_MAKER_EVENT_TEXT_CODES = {401, 405}
+RPG_MAKER_DIALOGUE_BLOCK_START = 101
+RPG_MAKER_DIALOGUE_TEXT_LINE = 401
 RPG_MAKER_CHOICE_CODE = 102
 RPG_MAKER_CHANGE_NAME_CODE = 320
 RPG_MAKER_CHANGE_NICKNAME_CODE = 324
@@ -319,6 +321,140 @@ def _walk_database_json(value: Any, file: Path, prefix: str = "$") -> list[TextE
     return entries
 
 
+def _merge_dialogue_blocks(
+    commands: list[Any],
+    file: Path,
+    prefix: str,
+    local_context: str,
+    plugin_text_extractor,
+) -> list[TextEntry]:
+    """Walk an event command list, merging consecutive 401 text lines into dialogue blocks.
+
+    Inspired by RPGMTL: multi-line dialogue (code 101 followed by consecutive 401 lines)
+    is merged into a single TextEntry so the LLM sees the complete sentence/paragraph.
+    Uses newline as line separator; sub_keys tracks individual keys for patching.
+    """
+    entries: list[TextEntry] = []
+    i = 0
+    while i < len(commands):
+        cmd = commands[i]
+        if not isinstance(cmd, dict):
+            i += 1
+            continue
+        code = cmd.get("code")
+        params = cmd.get("parameters")
+
+        if code == RPG_MAKER_DIALOGUE_BLOCK_START and isinstance(params, list):
+            cmd_prefix = f"{prefix}[{i}]"
+            speaker_name = ""
+            if len(params) >= 5 and params[4] and _is_text(str(params[4])):
+                speaker_name = str(params[4])
+                speaker_context = f"[{speaker_name}]"
+                preceding_text = local_context
+                context_for_speaker = f"{speaker_context}\n{preceding_text}" if preceding_text else speaker_context
+                entries.append(TextEntry(
+                    file=file,
+                    key=f"{cmd_prefix}.parameters[4]",
+                    source=speaker_name,
+                    context="rpg_maker_speaker_name",
+                    context_text=context_for_speaker,
+                ))
+
+            text_lines: list[str] = []
+            text_keys: list[str] = []
+            j = i + 1
+            while j < len(commands):
+                next_cmd = commands[j]
+                if not isinstance(next_cmd, dict):
+                    j += 1
+                    continue
+                if next_cmd.get("code") not in RPG_MAKER_EVENT_TEXT_CODES:
+                    break
+                next_params = next_cmd.get("parameters")
+                if not isinstance(next_params, list) or not next_params or not _is_text(next_params[0]):
+                    break
+                text_lines.append(next_params[0])
+                text_keys.append(f"{prefix}[{j}].parameters[0]")
+                j += 1
+
+            if text_lines:
+                merged_text = "\n".join(text_lines)
+                block_context = local_context
+                if speaker_name:
+                    block_context = f"[{speaker_name}]\n{local_context}" if local_context else f"[{speaker_name}]"
+                if len(text_lines) > 1:
+                    entries.append(TextEntry(
+                        file=file,
+                        key=text_keys[0],
+                        source=merged_text,
+                        context="rpg_maker_event_text",
+                        context_text=block_context,
+                        sub_keys=text_keys,
+                    ))
+                else:
+                    entries.append(TextEntry(
+                        file=file,
+                        key=text_keys[0],
+                        source=text_lines[0],
+                        context="rpg_maker_event_text",
+                        context_text=block_context,
+                    ))
+            i = j
+            continue
+
+        if code in RPG_MAKER_EVENT_TEXT_CODES and code != RPG_MAKER_DIALOGUE_BLOCK_START:
+            if isinstance(params, list) and params and _is_text(params[0]):
+                entries.append(TextEntry(
+                    file=file,
+                    key=f"{prefix}[{i}].parameters[0]",
+                    source=params[0],
+                    context="rpg_maker_event_text",
+                    context_text=local_context,
+                ))
+            i += 1
+            continue
+
+        if _is_choice_command(cmd):
+            if isinstance(params, list) and params and isinstance(params[0], list):
+                for index, choice in enumerate(params[0]):
+                    if _is_text(choice):
+                        entries.append(TextEntry(
+                            file=file,
+                            key=f"{prefix}[{i}].parameters[0][{index}]",
+                            source=choice,
+                            context="rpg_maker_choice",
+                            context_text=local_context,
+                        ))
+            i += 1
+            continue
+
+        if code == RPG_MAKER_CHANGE_NAME_CODE and isinstance(params, list) and len(params) >= 2 and _is_text(params[1]):
+            entries.append(TextEntry(file=file, key=f"{prefix}[{i}].parameters[1]", source=params[1], context="rpg_maker_actors_name", context_text=local_context))
+            i += 1
+            continue
+
+        if code == RPG_MAKER_CHANGE_NICKNAME_CODE and isinstance(params, list) and len(params) >= 2 and _is_text(params[1]):
+            entries.append(TextEntry(file=file, key=f"{prefix}[{i}].parameters[1]", source=params[1], context="rpg_maker_actors_nickname", context_text=local_context))
+            i += 1
+            continue
+
+        if code == RPG_MAKER_CHANGE_PROFILE_CODE and isinstance(params, list) and len(params) >= 2 and _is_text(params[1]):
+            entries.append(TextEntry(file=file, key=f"{prefix}[{i}].parameters[1]", source=params[1], context="rpg_maker_actors_profile", context_text=local_context))
+            i += 1
+            continue
+
+        if plugin_text_extractor is not None:
+            plugin_entries = plugin_text_extractor(cmd, file, f"{prefix}[{i}]", local_context)
+            if plugin_entries:
+                entries.extend(plugin_entries)
+                i += 1
+                continue
+
+        i += 1
+
+    return entries
+
+
 def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_context: str = "", plugin_text_extractor=None) -> list[TextEntry]:
     entries: list[TextEntry] = []
     if isinstance(value, dict):
@@ -388,7 +524,7 @@ def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_contex
                         list_context = f"{list_context}\n{page_context}"
                     else:
                         list_context = page_context
-                entries.extend(_walk_event_json(child, file, child_key, list_context, plugin_text_extractor))
+                entries.extend(_merge_dialogue_blocks(child, file, child_key, list_context, plugin_text_extractor))
             else:
                 entries.extend(_walk_event_json(child, file, child_key, local_context, plugin_text_extractor))
     elif isinstance(value, list):
@@ -460,7 +596,11 @@ def _parse_path(path: str) -> list[str | int]:
             if end == -1:
                 token += char
             else:
-                parts.append(int(path[i + 1:end]))
+                idx_str = path[i + 1:end]
+                try:
+                    parts.append(int(idx_str))
+                except ValueError:
+                    parts.append(idx_str)
                 i = end
         else:
             token += char
@@ -513,6 +653,25 @@ def _apply_output_path(source_file: Path, output_dir: Path) -> Path:
     return target
 
 
+def _detect_json_indent(text: str) -> int | None:
+    """Detect JSON indentation from the original file text.
+
+    Returns the indent level (2 or 4) if the file is pretty-printed,
+    or None if the file is minified (single-line).
+    Also handles tab indentation (returns 4 for tabs).
+    """
+    for line in text.split("\n")[1:4]:
+        stripped = line.lstrip()
+        if not stripped:
+            continue
+        if line.startswith("\t"):
+            return 4
+        spaces = len(line) - len(stripped)
+        if spaces > 0:
+            return 4 if spaces >= 4 else 2
+    return None
+
+
 def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
     grouped: dict[Path, list[TranslationResult]] = {}
     for result in results:
@@ -526,15 +685,32 @@ def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
             raise ValueError(f"Multiple source files map to one output path: {targets[resolved]} and {file} -> {target}")
         targets[resolved] = file
     for file, file_results in grouped.items():
-        data = json.loads(file.read_text(encoding="utf-8-sig"))
+        raw_text = file.read_text(encoding="utf-8-sig")
+        data = json.loads(raw_text)
+        indent = _detect_json_indent(raw_text)
         invalid_rows: list[str] = []
         applied = 0
         for result in file_results:
-            warning = _try_set_json_value(data, result.key, result.target)
-            if warning is not None:
-                invalid_rows.append(warning)
-                continue
-            applied += 1
+            if result.sub_keys:
+                target_lines = result.target.split("\n")
+                for idx, sub_key in enumerate(result.sub_keys):
+                    if idx < len(target_lines):
+                        line = target_lines[idx]
+                    elif target_lines:
+                        line = target_lines[-1]
+                    else:
+                        line = result.source.split("\n")[idx] if idx < len(result.source.split("\n")) else ""
+                    warning = _try_set_json_value(data, sub_key, line)
+                    if warning is not None:
+                        invalid_rows.append(warning)
+                    else:
+                        applied += 1
+            else:
+                warning = _try_set_json_value(data, result.key, result.target)
+                if warning is not None:
+                    invalid_rows.append(warning)
+                    continue
+                applied += 1
         if invalid_rows:
             for warning in invalid_rows:
                 log_event(f"WARN {file.name}: {warning}", level="WARN")
@@ -545,4 +721,4 @@ def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
             raise ValueError(f"No valid translation rows for {file}: {details}")
         target = _apply_output_path(file, output_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        target.write_text(json.dumps(data, ensure_ascii=False, indent=indent), encoding="utf-8")

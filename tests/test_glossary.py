@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from game_llm_translator.glossary import format_glossary_categorized, format_glossary_for_prompt, load_glossary, load_glossary_with_categories
+from game_llm_translator.glossary import build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_glossary, load_glossary_with_categories
 
 
 def test_load_glossary_basic(tmp_path):
@@ -127,3 +127,55 @@ def test_format_glossary_categorized_truncation():
     entries = [(f"term{i}", f"trans{i}", "cat") for i in range(200)]
     text = format_glossary_categorized(entries, max_chars=200)
     assert "more terms omitted" in text
+
+
+# ---------------------------------------------------------------------------
+# build_auto_glossary
+# ---------------------------------------------------------------------------
+
+def test_build_auto_glossary_extracts_name_contexts():
+    results = [
+        ("Harold", "Ha-rôn", "rpg_maker_actors_name"),
+        ("Attack", "Tấn công", "rpg_maker_skills_name"),
+        ("Potion", "Thuốc", "rpg_maker_items_name"),
+        ("Town Entrance", "Lối vào thị trấn", "rpg_maker_map_display_name"),
+    ]
+    glossary = build_auto_glossary(results)
+    assert len(glossary) == 4
+    assert ("Harold", "Ha-rôn") in glossary
+    assert ("Attack", "Tấn công") in glossary
+
+
+def test_build_auto_glossary_skips_non_name_contexts():
+    results = [
+        ("A brave warrior.", "Một chiến binh dũng cảm.", "rpg_maker_actors_profile"),
+        ("Deals damage", "Gây sát thương", "rpg_maker_skills_description"),
+    ]
+    glossary = build_auto_glossary(results)
+    assert len(glossary) == 0
+
+
+def test_build_auto_glossary_skips_empty_and_same():
+    results = [
+        ("", "", "rpg_maker_actors_name"),
+        ("HP", "HP", "rpg_maker_system_elements"),
+        ("Harold", "", "rpg_maker_actors_name"),
+    ]
+    glossary = build_auto_glossary(results)
+    assert len(glossary) == 0
+
+
+def test_build_auto_glossary_deduplicates():
+    results = [
+        ("Attack", "Tấn công", "rpg_maker_skills_name"),
+        ("Attack", "Công kích", "rpg_maker_items_name"),
+    ]
+    glossary = build_auto_glossary(results)
+    assert len(glossary) == 1
+    assert glossary[0] == ("Attack", "Tấn công")
+
+
+def test_build_auto_glossary_respects_max_entries():
+    results = [(f"Name{i}", f"Trans{i}", "rpg_maker_actors_name") for i in range(100)]
+    glossary = build_auto_glossary(results, max_entries=10)
+    assert len(glossary) == 10

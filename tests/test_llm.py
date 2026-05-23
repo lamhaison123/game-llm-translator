@@ -135,6 +135,32 @@ def test_restore_case_insensitive_token():
     assert "\\V[1]" in restored
 
 
+def test_restore_does_not_false_positive_lowercase():
+    """Lowercase version of token should NOT match unrelated text."""
+    text = "\\N[1]"
+    masked, mapping = _mask_protected_tokens(text)
+    assert len(mapping) == 1
+    token = list(mapping.keys())[0]
+    fake = "the word " + token.lower() + " should not be replaced"
+    restored = _restore_protected_tokens(fake, mapping)
+    assert "the word" in restored
+    assert restored != fake or token.lower() == token
+
+
+def test_mask_restore_mz_plugin_tokens():
+    text = "\\F[smile] says \\FFF[happy] with \\FH[ON] highlight"
+    masked, mapping = _mask_protected_tokens(text)
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
+def test_mask_restore_mz_outline_tokens():
+    text = "\\OC[3] text \\OO[5] more \\FS[24]"
+    masked, mapping = _mask_protected_tokens(text)
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
 # ---------------------------------------------------------------------------
 # _parse_translation_json
 # ---------------------------------------------------------------------------

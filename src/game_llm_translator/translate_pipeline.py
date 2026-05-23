@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import threading
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .app_logging import log_event
 from .csv_store import load_results, save_results
-from .glossary import apply_correction_table, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories
+from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories
 from .llm import LLMProvider, make_provider
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
@@ -143,7 +143,7 @@ def fanout_results(
         siblings = groups.get(gkey, []) if gkey else []
         if siblings:
             for entry in siblings:
-                expanded.append(TranslationResult(entry.file, entry.key, entry.source, result.target, entry.context))
+                expanded.append(TranslationResult(entry.file, entry.key, entry.source, result.target, entry.context, sub_keys=entry.sub_keys if entry.sub_keys else result.sub_keys))
         else:
             expanded.append(result)
     return expanded
@@ -197,6 +197,7 @@ def translate_batch_with_retry(
     options: TranslateOptions,
     report: TranslateReport,
     report_lock: threading.Lock | None = None,
+    _depth: int = 0,
 ) -> list[TranslationResult]:
     for attempt in range(4):
         _raise_if_stopped(options)
@@ -218,11 +219,11 @@ def translate_batch_with_retry(
                 while time.monotonic() < end:
                     _raise_if_stopped(options)
                     time.sleep(0.5)
-                if "524" in str(exc) and len(batch) > 1:
+                if "524" in str(exc) and len(batch) > 1 and _depth < 6:
                     mid = len(batch) // 2
                     _log(options, f"524 timeout: splitting batch {len(batch)} -> {mid}+{len(batch)-mid} to reduce server load")
-                    left = translate_batch_with_retry(provider, batch[:mid], target_lang, source_lang, options, report, report_lock)
-                    right = translate_batch_with_retry(provider, batch[mid:], target_lang, source_lang, options, report, report_lock)
+                    left = translate_batch_with_retry(provider, batch[:mid], target_lang, source_lang, options, report, report_lock, _depth + 1)
+                    right = translate_batch_with_retry(provider, batch[mid:], target_lang, source_lang, options, report, report_lock, _depth + 1)
                     return left + right
             else:
                 raise
@@ -332,10 +333,17 @@ def run_translate(
         return [e]
 
     def process_batch(batch: list[TextEntry]) -> None:
-        nonlocal translated_count
+        nonlocal translated_count, glossary_block
         if _stopped(options):
             return
-        batch_provider = provider if provider is not None else _make_provider(options, glossary_block)
+        batch_glossary = glossary_block
+        if provider is None and not batch_glossary:
+            with results_lock:
+                if results:
+                    auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in results])
+                    if auto_entries:
+                        batch_glossary = format_glossary_for_prompt(auto_entries, max_chars=2000)
+        batch_provider = provider if provider is not None else _make_provider(options, batch_glossary)
         try:
             batch_results = translate_batch_with_retry(batch_provider, batch, options.target_lang, options.source_lang, options, report, report_lock)
         except Exception as exc:
@@ -406,6 +414,14 @@ def run_translate(
             for batch in batches:
                 _raise_if_stopped(options)
                 process_batch(batch)
+                if provider is not None and len(batches) > 1:
+                    with results_lock:
+                        if results:
+                            auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in results])
+                            if auto_entries:
+                                auto_block = format_glossary_for_prompt(auto_entries, max_chars=2000)
+                                glossary_block = (glossary_block + "\n" + auto_block) if glossary_block else auto_block
+                                provider.set_glossary(glossary_block)
         else:
             import concurrent.futures
 

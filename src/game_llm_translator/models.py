@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -9,6 +9,7 @@ class TextEntry:
     source: str
     context: str = ""
     context_text: str = ""
+    sub_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -18,6 +19,7 @@ class TranslationResult:
     source: str
     target: str
     context: str = ""
+    sub_keys: list[str] = field(default_factory=list)
 
 
 def text_identity(file: Path | str, key: str) -> tuple[str, str]:

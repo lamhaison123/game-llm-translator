@@ -1643,7 +1643,7 @@ class TranslationEditor(QDialog):
 
     def _save_file(self) -> None:
         self._save_current(update_tree=True)
-        fieldnames = ["file", "key", "source", "target", "context"]
+        fieldnames = ["file", "key", "source", "target", "context", "sub_keys"]
         with self.path.open("w", newline="", encoding="utf-8") as fp:
             w = csv.DictWriter(fp, fieldnames=fieldnames)
             w.writeheader()

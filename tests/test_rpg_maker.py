@@ -14,6 +14,7 @@ from game_llm_translator.rpg_maker import (
     detect_rpg_maker,
     extract_rpg_maker,
 )
+from game_llm_translator.rpg_maker_common import _detect_json_indent
 
 
 # ---------------------------------------------------------------------------
@@ -658,6 +659,63 @@ def test_extract_mz_speaker_name_propagates_to_dialogue_context(tmp_path):
     _make_rpg_game(tmp_path, {"Map001.json": map_data})
     entries = extract_rpg_maker(tmp_path)
     dialogue_entries = [e for e in entries if e.context == "rpg_maker_event_text"]
-    assert len(dialogue_entries) == 2
-    for entry in dialogue_entries:
-        assert "[Theresia]" in entry.context_text
+    assert len(dialogue_entries) == 1
+    merged_entry = dialogue_entries[0]
+    assert "I will teach you." in merged_entry.source
+    assert "Listen carefully." in merged_entry.source
+    assert "[Theresia]" in merged_entry.context_text
+    assert len(merged_entry.sub_keys) == 2
+
+
+# ---------------------------------------------------------------------------
+# _detect_json_indent
+# ---------------------------------------------------------------------------
+
+def test_detect_json_indent_minified():
+    text = '{"name":"Harold","nickname":"The Sword"}'
+    assert _detect_json_indent(text) is None
+
+
+def test_detect_json_indent_2_spaces():
+    text = '{\n  "name": "Harold",\n  "nickname": "The Sword"\n}'
+    assert _detect_json_indent(text) == 2
+
+
+def test_detect_json_indent_4_spaces():
+    text = '[\n    null,\n    {\n        "name": "Harold"\n    }\n]'
+    assert _detect_json_indent(text) == 4
+
+
+def test_apply_rpg_maker_preserves_minified_format(tmp_path):
+    minified_json = json.dumps([None, {"id": 1, "name": "Harold"}], ensure_ascii=False)
+    src = tmp_path / "data" / "Actors.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(minified_json, encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    results = [TranslationResult(file=src, key="$[1].name", source="Harold", target="Ha-rôn")]
+    apply_rpg_maker(results, out_dir)
+
+    out_text = (out_dir / "Actors.json").read_text(encoding="utf-8")
+    assert "\n" not in out_text.strip()
+    data = json.loads(out_text)
+    assert data[1]["name"] == "Ha-rôn"
+
+
+def test_apply_rpg_maker_preserves_indented_format(tmp_path):
+    indented_json = json.dumps([None, {"id": 1, "name": "Harold"}], ensure_ascii=False, indent=2)
+    src = tmp_path / "data" / "Actors.json"
+    src.parent.mkdir(parents=True)
+    src.write_text(indented_json, encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    results = [TranslationResult(file=src, key="$[1].name", source="Harold", target="Ha-rôn")]
+    apply_rpg_maker(results, out_dir)
+
+    out_text = (out_dir / "Actors.json").read_text(encoding="utf-8")
+    assert "\n" in out_text
+    lines = out_text.split("\n")
+    indented_lines = [l for l in lines if l.startswith("  ") and not l.strip().startswith("]")]
+    assert len(indented_lines) > 0
+    data = json.loads(out_text)
+    assert data[1]["name"] == "Ha-rôn"

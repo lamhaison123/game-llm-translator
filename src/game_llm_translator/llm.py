@@ -83,9 +83,12 @@ def _mask_protected_tokens(text: str) -> tuple[str, dict[str, str]]:
 
 
 def _restore_protected_tokens(text: str, mapping: dict[str, str]) -> str:
-    for token, original in mapping.items():
+    sorted_tokens = sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True)
+    for token, original in sorted_tokens:
         text = text.replace(token, original)
-        text = text.replace(token.lower(), original)
+        lower_token = token.lower()
+        if lower_token != token:
+            text = text.replace(lower_token, original)
     return text
 
 
@@ -129,6 +132,10 @@ These tokens MUST appear in the target text unchanged. Never translate, remove, 
 - \\$ — Open gold window.
 - \\/ — Escape backslash (produces a single \\).
 - \\_ — Half-width space (rare, mostly MZ).
+- \\F[name] — Standing picture expression code (MZ plugin: LL_StandingPicture, etc.). Preserve bracket contents exactly.
+- \\FFF[name] — Standing picture face code. Preserve exactly.
+- \\FH[ON/OFF] — Standing picture highlight toggle. Preserve exactly.
+- \\OC[n] — Outline color (MZ). \\OO[n] — Outline opacity (MZ). \\FS[n] — Font size (MZ).
 - %1, %2, %3… — Positional parameter substitution in System.json messages. %1 is usually the actor name, %2 is the target/skill name.
 - {name}, {0}, %s, %d — Other common placeholders.
 
@@ -136,6 +143,7 @@ These tokens MUST appear in the target text unchanged. Never translate, remove, 
 1. Preserve ALL placeholders, variables, control codes, escape sequences, and tags exactly as-is.
    NEVER reorder, remove, or modify these tokens. Keep them in their logical position in the target language sentence.
 2. Keep line breaks (\\n or actual newlines in JSON strings) exactly where they appear in the source. Do not merge or split lines.
+   Exception: when a dialogue block is merged (source contains newlines from multiple consecutive Show Text lines), preserve the same number of line breaks in the translation. Each \\n corresponds to a separate in-game text line.
 3. Translate naturally for the target language — avoid word-for-word literal translation. Reorder grammar naturally while keeping all tokens.
 4. Match the register and tone of the source: formal speech stays formal, casual stays casual, dramatic stays dramatic.
 5. For character dialogue: use natural spoken language, not written/formal prose. Respect character voice indicated by context_text speaker tags like [SpeakerName].
@@ -146,7 +154,8 @@ These tokens MUST appear in the target text unchanged. Never translate, remove, 
 10. For speaker names (context "speaker name"): translate character names consistently across ALL items in the entire batch. If a name appears in both Actors.json and dialogue, use the SAME translation.
 11. For state names, descriptions, and messages: keep them very brief. State names like "戦闘不能" → "KO" or "Knocked Out" (not "Unable to Battle"). State messages use %1 for the affected battler's name.
 12. For "note" fields containing angle-bracket plugin notetags (e.g. <ItemImage:path>, <バトルウェイト:10>): do NOT translate the tag name or its parameter if it is a number/asset path — only translate any descriptive text within the note that is player-facing. Most note tags are engine configuration and should be copied unchanged.
-13. For System.json array entries (armorTypes, elements, equipTypes, skillTypes, weaponTypes): these are short UI labels in menus. Translate them with standard RPG terminology, keeping each entry concise.
+13. For MZ plugin command text (context starts with "rpg_maker_mz_plugin_"): only translate string values that contain natural language. Numeric IDs, asset paths, and identifier strings (e.g. actorId, switchId) are engine configuration — copy them unchanged. When in doubt, copy unchanged.
+14. For System.json array entries (armorTypes, elements, equipTypes, skillTypes, weaponTypes): these are short UI labels in menus. Translate them with standard RPG terminology, keeping each entry concise.
 
 ## Context usage
 - The "context" field describes the type of text. Common values:
@@ -426,7 +435,7 @@ def _mask_entries(entries: list[TextEntry]) -> tuple[list[TextEntry], list[dict[
         masked_source, mapping = _mask_protected_tokens(entry.source)
         token_maps.append(mapping)
         if mapping:
-            masked_entries.append(TextEntry(entry.file, entry.key, masked_source, entry.context, entry.context_text))
+            masked_entries.append(TextEntry(entry.file, entry.key, masked_source, entry.context, entry.context_text, entry.sub_keys))
         else:
             masked_entries.append(entry)
     return masked_entries, token_maps
@@ -455,7 +464,7 @@ def _results_from_json(
         if token_maps and i < len(token_maps) and token_maps[i]:
             target = _restore_protected_tokens(target, token_maps[i])
         target = _fix_token_formatting(target)
-        results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context))
+        results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context, sub_keys=entry.sub_keys))
     return results, stats
 
 
@@ -493,7 +502,8 @@ class MTLProvider(LLMProvider):
             masked_source, tokens = _mask_protected_tokens(entry.source)
             target = self.translate_text(masked_source, target_lang, source_lang)
             target = _restore_protected_tokens(target, tokens)
-            results.append(TranslationResult(entry.file, entry.key, entry.source, target or entry.source, entry.context))
+            target = _fix_token_formatting(target)
+            results.append(TranslationResult(entry.file, entry.key, entry.source, target or entry.source, entry.context, sub_keys=entry.sub_keys))
             if self.pause_seconds:
                 self._sleep_interruptible(self.pause_seconds)
         return results
@@ -511,10 +521,11 @@ def _parse_google_translate_response(data: Any) -> str:
 
 class GoogleMTLProvider(MTLProvider):
     def translate_text(self, text: str, target_lang: str, source_lang: str | None = None) -> str:
+        lang = _lang_code(target_lang, "vi")
         params = {
             "client": "gtx",
             "sl": _lang_code(source_lang),
-            "tl": _lang_code(target_lang, "vi"),
+            "tl": lang,
             "dt": "t",
             "q": text,
         }
@@ -672,7 +683,7 @@ def _anthropic_message_text(message: Any) -> str:
 
 class AnthropicProvider(LLMProvider):
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
-        kwargs: dict[str, Any] = {"api_key": api_key or os.getenv("ANTHROPIC_API_KEY")}
+        kwargs: dict[str, Any] = {"api_key": api_key or os.getenv("ANTHROPIC_API_KEY") or ""}
         if base_url:
             kwargs["base_url"] = base_url
         self.client = Anthropic(**kwargs)
@@ -724,7 +735,7 @@ def _chat_completion_text(response: Any) -> str:
 
 class OpenAIProvider(LLMProvider):
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
-        kwargs = cast(Any, {"api_key": api_key or os.getenv("OPENAI_API_KEY") or ""})
+        kwargs = cast(Any, {"api_key": api_key or os.getenv("OPENAI_API_KEY") or "sk-placeholder"})
         selected_base_url = base_url or os.getenv("OPENAI_BASE_URL") or ""
         if selected_base_url:
             kwargs["base_url"] = selected_base_url
