@@ -93,3 +93,33 @@ def test_format_noun_warnings_truncates():
     warnings = format_noun_warnings(issues, max_items=10)
     assert len(warnings) == 11
     assert "40 more" in warnings[-1]
+
+
+def test_noun_consistency_detects_speaker_name_inconsistency():
+    results = [
+        TranslationResult(Path("a.json"), "$[1].parameters[4]", "特蕾西亚", "Theresia", "rpg_maker_speaker_name"),
+        TranslationResult(Path("b.json"), "$[2].parameters[4]", "特蕾西亚", "Teresia", "rpg_maker_speaker_name"),
+    ]
+    issues = check_noun_consistency(results)
+    assert len(issues) == 1
+    assert issues[0][0] == "特蕾西亚"
+
+
+def test_translation_warnings_speaker_name_overflow():
+    issues = translation_warnings("ア", "A very long translated speaker name that overflows", context="rpg_maker_speaker_name")
+    assert any("name/UI label too long" in i for i in issues)
+
+
+def test_translation_warnings_state_description_ok():
+    issues = translation_warnings("毒状態のキャラクター", "Poisoned character takes damage", context="rpg_maker_states_description")
+    assert issues == []
+
+
+def test_translation_warnings_state_description_too_long():
+    issues = translation_warnings("毒", "A very long description that is way too much for a short source", context="rpg_maker_states_description")
+    assert any("description too long" in i for i in issues)
+
+
+def test_translation_warnings_system_title_overflow():
+    issues = translation_warnings("短い", "An extremely long game title that would overflow the title screen", context="rpg_maker_system_gameTitle")
+    assert any("name/UI label too long" in i for i in issues)

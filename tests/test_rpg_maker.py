@@ -448,3 +448,190 @@ def test_apply_rpg_maker_raises_before_writing_when_all_rows_invalid(tmp_path):
         apply_rpg_maker(results, out_dir)
 
     assert not (out_dir / "Actors.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# MZ code 101 speaker name extraction
+# ---------------------------------------------------------------------------
+
+def test_extract_mz_speaker_name_from_code_101(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 101, "parameters": ["", 0, 0, 2, "Theresia"]},
+                            {"code": 401, "parameters": ["Hello there!"]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Theresia" in sources
+    assert "Hello there!" in sources
+    speaker_entry = next(e for e in entries if e.source == "Theresia")
+    assert speaker_entry.context == "rpg_maker_speaker_name"
+    dialogue_entry = next(e for e in entries if e.source == "Hello there!")
+    assert dialogue_entry.context == "rpg_maker_event_text"
+
+
+def test_extract_mv_code_101_without_speaker_name(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 101, "parameters": ["Actor1", 0, 0, 2]},
+                            {"code": 401, "parameters": ["Hello!"]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Hello!" in sources
+    speaker_entries = [e for e in entries if e.context == "rpg_maker_speaker_name"]
+    assert speaker_entries == []
+
+
+def test_extract_mz_code_101_empty_speaker_not_extracted(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 101, "parameters": ["", 0, 0, 2, ""]},
+                            {"code": 401, "parameters": ["Hello!"]},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    speaker_entries = [e for e in entries if e.context == "rpg_maker_speaker_name"]
+    assert speaker_entries == []
+
+
+# ---------------------------------------------------------------------------
+# Event command 320/324/325 (Change Actor Name/Nickname/Profile)
+# ---------------------------------------------------------------------------
+
+def test_extract_change_actor_name_code_320(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 320, "parameters": [1, "NewHeroName"]},
+                            {"code": 0, "parameters": []},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "NewHeroName" in sources
+    name_entry = next(e for e in entries if e.source == "NewHeroName")
+    assert name_entry.context == "rpg_maker_actors_name"
+    assert name_entry.key.endswith("parameters[1]")
+
+
+def test_extract_change_actor_nickname_code_324(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 324, "parameters": [1, "The Brave"]},
+                            {"code": 0, "parameters": []},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "The Brave" in sources
+    nick_entry = next(e for e in entries if e.source == "The Brave")
+    assert nick_entry.context == "rpg_maker_actors_nickname"
+
+
+def test_extract_change_actor_profile_code_325(tmp_path):
+    map_data = json.dumps({
+        "events": [
+            None,
+            {
+                "id": 1,
+                "pages": [
+                    {
+                        "list": [
+                            {"code": 325, "parameters": [1, "A legendary warrior."]},
+                            {"code": 0, "parameters": []},
+                        ]
+                    }
+                ],
+            },
+        ],
+    })
+    _make_rpg_game(tmp_path, {"Map001.json": map_data})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "A legendary warrior." in sources
+    profile_entry = next(e for e in entries if e.source == "A legendary warrior.")
+    assert profile_entry.context == "rpg_maker_actors_profile"
+
+
+# ---------------------------------------------------------------------------
+# States.json description field
+# ---------------------------------------------------------------------------
+
+STATES_JSON = json.dumps([
+    None,
+    {
+        "id": 1,
+        "name": "Poison",
+        "description": "Takes damage each turn.",
+        "message1": "%1 is poisoned!",
+        "message2": "",
+        "message3": "",
+        "message4": "Poison was cured.",
+    },
+])
+
+
+def test_extract_states_description(tmp_path):
+    _make_rpg_game(tmp_path, {"States.json": STATES_JSON})
+    entries = extract_rpg_maker(tmp_path)
+    sources = [e.source for e in entries]
+    assert "Poison" in sources
+    assert "Takes damage each turn." in sources
+    assert "%1 is poisoned!" in sources

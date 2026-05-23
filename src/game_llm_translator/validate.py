@@ -18,6 +18,7 @@ _NAME_CONTEXTS = frozenset({
     "rpg_maker_map_display_name",
     "rpg_maker_system_gameTitle",
     "rpg_maker_system_currencyUnit",
+    "rpg_maker_speaker_name",
 })
 
 _SHORT_UI_CONTEXTS = frozenset({
@@ -35,6 +36,18 @@ _SHORT_UI_CONTEXTS = frozenset({
     "rpg_maker_terms_basic",
     "rpg_maker_terms_params",
     "rpg_maker_choice",
+    "rpg_maker_system_gameTitle",
+    "rpg_maker_system_currencyUnit",
+    "rpg_maker_speaker_name",
+})
+
+_DESCRIPTION_CONTEXTS = frozenset({
+    "rpg_maker_skills_description",
+    "rpg_maker_items_description",
+    "rpg_maker_weapons_description",
+    "rpg_maker_armors_description",
+    "rpg_maker_states_description",
+    "rpg_maker_actors_profile",
 })
 
 
@@ -57,6 +70,9 @@ def translation_warnings(source: str, target: str, context: str = "") -> list[st
         max_ratio = 4 if cjk_ratio >= 0.5 else 2.5
         if len(target) > len(source) * max_ratio and len(source) < 60:
             warnings.append(f"name/UI label too long ({len(source)}→{len(target)} chars, max {max_ratio}x for context '{context}')")
+    elif context in _DESCRIPTION_CONTEXTS:
+        if len(target) > len(source) * 4 and len(source) < 120:
+            warnings.append(f"description too long ({len(source)}→{len(target)} chars, max 4x for context '{context}')")
     elif cjk_ratio >= 0.5 and len(source) <= 6:
         pass
     else:

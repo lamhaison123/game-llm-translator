@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re as _re
 from pathlib import Path
 
 
@@ -84,9 +85,21 @@ def load_correction_table(path: Path | None) -> list[tuple[str, str]]:
 
 
 def apply_correction_table(text: str, corrections: list[tuple[str, str]]) -> str:
-    """Apply correction table entries as simple string replacements."""
+    """Apply correction table entries as word-boundary-aware replacements.
+
+    Uses word boundaries when the find term consists of ASCII alphanumerics,
+    preventing partial matches (e.g. "HP" won't match inside "HPRecovery").
+    For ASCII terms adjacent to CJK characters, also matches since CJK acts
+    as a natural word boundary. Falls back to plain replacement for terms
+    containing non-ASCII or non-alphanumeric characters.
+    """
     for find, replace in corrections:
-        text = text.replace(find, replace)
+        if not find:
+            continue
+        if find.isascii() and find.isalnum():
+            text = _re.sub(r'(?<![A-Za-z0-9_])' + _re.escape(find) + r'(?![A-Za-z0-9_])', replace, text)
+        else:
+            text = text.replace(find, replace)
     return text
 
 

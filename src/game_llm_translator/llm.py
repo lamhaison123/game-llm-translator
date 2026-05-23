@@ -124,24 +124,35 @@ SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG, vi
 2. Keep line breaks (\\n, actual newlines) where they appear in the source. Do not merge or split lines.
 3. Translate naturally for the target language — avoid word-for-word literal translation. Reorder grammar naturally while keeping all tokens.
 4. Match the register and tone of the source: formal speech stays formal, casual stays casual, dramatic stays dramatic.
-5. For character dialogue: use natural spoken language, not written/formal prose. Respect character voice indicated by context.
+5. For character dialogue: use natural spoken language, not written/formal prose. Respect character voice indicated by context_text speaker tags like [SpeakerName].
 6. For item/skill names and descriptions: be concise and consistent with RPG terminology. Keep names short enough to fit UI.
 7. For UI text (menu labels, button text): keep it short and clear.
 8. For battle messages: keep them punchy and action-oriented. The %1 and %2 placeholders in messages like "%1：%2" refer to the user and skill name — preserve this pattern exactly.
 9. For skill/item descriptions containing \\i[N] icon tokens: the icon token and the text after it form a single phrase — translate the text but keep the icon token in place.
+10. For speaker names (context "speaker name"): translate character names consistently across ALL items. If a name appears in both the Actors database and dialogue, use the SAME translation. Keep proper nouns short (ideally ≤8 characters for CJK names translated to alphabetic languages).
+11. For state descriptions and messages: keep them brief and match the game's existing terminology. State messages like "%1が戦闘不能！" typically mean "%1 is knocked out!" — adapt the tone to the target language.
 
 ## Context usage
-- The "context" field describes the type of text (e.g. rpg_maker_event_text, rpg_maker_skills_name, rpg_maker_mz_plugin_*).
-- The "context_text" field contains surrounding dialogue lines from the same event for speaker/tone inference.
+- The "context" field describes the type of text. Common values:
+  dialogue = in-game dialogue line, choice option = player choice, speaker name = character name,
+  map name = area name, skill/item/weapon/armor/enemy/state name = database name,
+  skill/item/weapon/armor/state description = database description, battle message = battle log text,
+  term/command/parameter name = system UI label, system message = engine message template,
+  plugin text = plugin-specific text, currency unit = money unit, game title = game title,
+  actor name/nickname/profile = character database fields.
+- The "context_text" field contains surrounding dialogue lines from the same event page, with speaker names prefixed as [Name].
 - Use context_text to infer speaker identity, tone, pronouns, and terminology consistency.
 - Do NOT translate context_text unless it is also the item's source field.
 - Maintain consistent terminology for the same game concepts across all items in the batch (e.g. always use the same word for "skill", "item", "quest").
+- When context_text shows [SpeakerName], use that to determine the character's voice and pronouns for the dialogue line that follows.
 
 ## Common pitfalls
 - Do NOT add explanations, notes, or prefixes like "Translation:" to target text.
 - Do NOT translate placeholder tokens — \\N[1] stays as \\N[1], not a name.
 - If a source string is only tokens/whitespace (e.g. "\\N[1]"), copy it unchanged.
 - Preserve full-width punctuation (：。、「」 etc.) only if appropriate for the target language; convert to target-language equivalents.
+- Do NOT transliterate names unless the target language convention requires it (e.g. CJK to Vietnamese: keep original CJK or use established readings).
+- When translating database names (actors, enemies, items, skills, states): keep them SHORT. UI slots in RPG Maker are typically 12-20 characters wide. A name that is too long will overflow or be truncated.
 """
 
 _LANG_SPECIFIC_RULES: dict[str, str] = {
@@ -152,6 +163,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Honorifics and address forms should match the character's personality and social role.
 - For battle messages with %1/%2: keep the format, e.g. "%1 sử dụng %2".
 - CJK full-width punctuation (：。、「」) should be converted to Vietnamese equivalents (: . "").
+- For speaker names: keep CJK proper nouns as-is or use Vietnamese readings. If a character has a name in both CJK and alphabetic form, prefer the alphabetic form.
+- For state names/descriptions: keep them concise and use Vietnamese RPG terminology (độc, choáng, chết, v.v.).
 """,
     "ja": """## Japanese-specific rules
 - Use appropriate keigo level matching the character's social role and relationship.
@@ -245,6 +258,7 @@ _CONTEXT_HINTS: dict[str, str] = {
     "rpg_maker_actors_profile": "actor profile",
     "rpg_maker_enemies_name": "enemy name",
     "rpg_maker_states_name": "state name",
+    "rpg_maker_states_description": "state description",
     "rpg_maker_states_message1": "state message",
     "rpg_maker_states_message2": "state message",
     "rpg_maker_states_message3": "state message",
@@ -256,6 +270,7 @@ _CONTEXT_HINTS: dict[str, str] = {
     "rpg_maker_terms_commands": "command",
     "rpg_maker_terms_params": "parameter name",
     "rpg_maker_terms_messages": "system message",
+    "rpg_maker_speaker_name": "speaker name",
 }
 
 

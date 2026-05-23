@@ -17,7 +17,7 @@ RPG_MAKER_DATABASE_TEXT_FIELDS = {
     "Weapons.json": {"name", "description"},
     "Armors.json": {"name", "description"},
     "Enemies.json": {"name"},
-    "States.json": {"name", "message1", "message2", "message3", "message4"},
+    "States.json": {"name", "description", "message1", "message2", "message3", "message4"},
 }
 RPG_MAKER_SYSTEM_TEXT_KEYS = {"gameTitle", "currencyUnit"}
 RPG_MAKER_SYSTEM_ARRAY_KEYS = {"armorTypes", "elements", "equipTypes", "skillTypes", "weaponTypes"}
@@ -40,6 +40,9 @@ RPG_MAKER_ASSET_NAME_KEYS = {
 RPG_MAKER_AUDIO_KEYS = {"bgm", "bgs", "me", "se", "battleBgm", "titleBgm", "victoryMe", "defeatMe"}
 RPG_MAKER_EVENT_TEXT_CODES = {401, 405}
 RPG_MAKER_CHOICE_CODE = 102
+RPG_MAKER_CHANGE_NAME_CODE = 320
+RPG_MAKER_CHANGE_NICKNAME_CODE = 324
+RPG_MAKER_CHANGE_PROFILE_CODE = 325
 RPG_MAKER_SKIP_DIRS = {"新しいフォルダー", "新しいフォルダー - コピー", "backup", "backups"}
 RPG_MAKER_JSON_ENGINES = {"mv", "mz", "mv-mz"}
 
@@ -229,6 +232,10 @@ def _event_context_text(value: dict[str, Any]) -> str:
             speaker = str(params[4]) if params[4] else ""
             if speaker and speaker not in parts:
                 parts.append(f"[{speaker}]")
+        if code == RPG_MAKER_CHOICE_CODE and isinstance(params, list) and params and isinstance(params[0], list):
+            for choice in params[0]:
+                if isinstance(choice, str) and choice.strip() and choice not in parts:
+                    parts.append(choice)
         if code in RPG_MAKER_EVENT_TEXT_CODES and isinstance(params, list) and params and _is_text(params[0]):
             text = params[0]
             if text not in parts:
@@ -309,13 +316,27 @@ def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_contex
         local_context = _event_context_text(value) or inherited_context
         if _is_event_object(value):
             local_context = inherited_context
+        code = value.get("code")
+        params = value.get("parameters")
         if _is_event_text_command(value):
             entries.append(TextEntry(file=file, key=f"{prefix}.parameters[0]", source=value["parameters"][0], context="rpg_maker_event_text", context_text=inherited_context))
+        if code == 101 and isinstance(params, list) and len(params) >= 5 and _is_text(params[4]):
+            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[4]", source=params[4], context="rpg_maker_speaker_name", context_text=local_context))
+        if _is_event_text_command(value) or (code == 101 and isinstance(params, list) and len(params) >= 5 and _is_text(params[4])):
             return entries
         if _is_choice_command(value):
             for index, choice in enumerate(value["parameters"][0]):
                 if _is_text(choice):
                     entries.append(TextEntry(file=file, key=f"{prefix}.parameters[0][{index}]", source=choice, context="rpg_maker_choice", context_text=local_context))
+            return entries
+        if code == RPG_MAKER_CHANGE_NAME_CODE and isinstance(params, list) and len(params) >= 2 and _is_text(params[1]):
+            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[1]", source=params[1], context="rpg_maker_actors_name", context_text=local_context))
+            return entries
+        if code == RPG_MAKER_CHANGE_NICKNAME_CODE and isinstance(params, list) and len(params) >= 2 and _is_text(params[1]):
+            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[1]", source=params[1], context="rpg_maker_actors_nickname", context_text=local_context))
+            return entries
+        if code == RPG_MAKER_CHANGE_PROFILE_CODE and isinstance(params, list) and len(params) >= 2 and _is_text(params[1]):
+            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[1]", source=params[1], context="rpg_maker_actors_profile", context_text=local_context))
             return entries
         if plugin_text_extractor is not None:
             plugin_entries = plugin_text_extractor(value, file, prefix, local_context)

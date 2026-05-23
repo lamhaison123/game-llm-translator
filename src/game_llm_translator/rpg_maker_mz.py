@@ -171,17 +171,25 @@ _PLUGIN_TEXT_FIELD_OVERRIDES: dict[str, dict[str, list[str]]] = {
     "MPP_MapLight": {
         "setDarkness": [],
     },
-    "NovelGameUI": [],
+    "NovelGameUI": {
+        "addBackLog": ["logTexts"],
+    },
     "ITB_DisableKeyInputs": [],
     "111_InputForm": {
         "show": [],
     },
     "PictureAnimation": [],
-    "PANDA_ExNumberInput": [],
+    "PANDA_ExNumberInput": {
+        "SETUP_NUMBER_INPUT_WINDOW": [],
+    },
     "DTextPicture": {
         "dText": ["text"],
     },
 }
+
+_PLUGIN_PLUGIN_COMMAND_NAMES_RE = re.compile(
+    r"^[A-Z][A-Za-z]*(?:::|_)\w+$"
+)
 
 
 def _extract_mz_plugin_text(command: dict[str, Any], file: Path, prefix: str, context_text: str) -> list[TextEntry]:
