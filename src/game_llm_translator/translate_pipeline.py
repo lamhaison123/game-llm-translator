@@ -143,7 +143,7 @@ def fanout_results(
         siblings = groups.get(gkey, []) if gkey else []
         if siblings:
             for entry in siblings:
-                expanded.append(TranslationResult(entry.file, entry.key, entry.source, result.target, entry.context, sub_keys=entry.sub_keys if entry.sub_keys else result.sub_keys))
+                expanded.append(TranslationResult(entry.file, entry.key, entry.source, result.target, entry.context, sub_keys=entry.sub_keys))
         else:
             expanded.append(result)
     return expanded
@@ -324,6 +324,7 @@ def run_translate(
     batches = build_char_batches(unique_entries, max_entries=size)
     results_lock = threading.Lock()
     report_lock = threading.Lock()
+    glossary_lock = threading.Lock()
     translated_count = len(results)
     failed_batches: list[list[TextEntry]] = []
 
@@ -333,10 +334,11 @@ def run_translate(
         return [e]
 
     def process_batch(batch: list[TextEntry]) -> None:
-        nonlocal translated_count, glossary_block
+        nonlocal translated_count
         if _stopped(options):
             return
-        batch_glossary = glossary_block
+        with glossary_lock:
+            batch_glossary = glossary_block
         if provider is None and not batch_glossary:
             with results_lock:
                 if results:
@@ -425,8 +427,9 @@ def run_translate(
                             auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in results])
                             if auto_entries:
                                 auto_block = format_glossary_for_prompt(auto_entries, max_chars=2000)
-                                glossary_block = (glossary_block + "\n" + auto_block) if glossary_block else auto_block
-                                provider.set_glossary(glossary_block)
+                                with glossary_lock:
+                                    glossary_block = (glossary_block + "\n" + auto_block) if glossary_block else auto_block
+                                    provider.set_glossary(glossary_block)
         else:
             import concurrent.futures
 
@@ -477,7 +480,12 @@ def run_translate(
                     expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
                     if corrections:
                         expanded = [
-                            TranslationResult(r.file, r.key, r.source, apply_correction_table(r.target, corrections), r.context)
+                            TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, apply_correction_table(r.target, corrections)), r.context, sub_keys=r.sub_keys)
+                            for r in expanded
+                        ]
+                    else:
+                        expanded = [
+                            TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, r.target), r.context, sub_keys=r.sub_keys)
                             for r in expanded
                         ]
                     with results_lock:

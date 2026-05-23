@@ -157,7 +157,7 @@ def gui_game_type_to_engine(value: str | None) -> str:
 
 
 _ONLY_CONTROL_CODE_RE = _re.compile(
-    r'^[\s\\]*(?:\\[a-zA-Z]+\[\d+\][\s\\]*)+$'
+    r'^(?:[\s\\]*(?:\\F[A-Za-z]*\[[^\]]*\]|\\OC\[\d+\]|\\OO\[\d+\]|\\FS\[\d+\]|\\[A-Za-z]+\[[^\]]*\]|\\[{}.$!><^_\\]|%\d+))*[\s\\]*$'
 )
 
 
@@ -285,6 +285,64 @@ def _walk_terms(value: Any, file: Path, prefix: str, context: str = "rpg_maker_t
     elif isinstance(value, list):
         for index, item in enumerate(value):
             _append_text_entry(entries, file, f"{prefix}[{index}]", item, context)
+    return entries
+
+
+_PLUGIN_UI_TEXT_KEYS = {"text", "label", "title", "description", "placeholder", "tooltip"}
+_PLUGIN_UI_SKIP_KEYS = {
+    "type", "id", "folderName", "imageName", "faceName", "faceIndex",
+    "fillColor", "strokeColor", "textColor", "borderColor", "shadow",
+    "outline", "font", "alignment", "verticalCentered", "multiline",
+    "fontSize", "corners", "strokeWidth", "fillAlpha", "borderThickness",
+    "borderOpacity", "backgroundType", "itemsPadding", "maxCols",
+    "onPurchaseSE", "onMessageAddedSE", "messageBaseHeight",
+    "messageExtraLineHeightAdd", "playScaleAnimation", "initialScale",
+    "finalScale", "scaleChangeStep", "clickAnimation",
+    "showAppContentDelayMS", "scrollVerticalStep",
+    "nextMessageWaitTimeInSeconds",
+}
+
+
+def _is_translatable_ui_text(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if len(value.strip()) < 2:
+        return False
+    if value.strip().startswith("$") or value.strip().startswith("@"):
+        return False
+    if value.strip().startswith("#") and len(value.strip()) in (4, 7):
+        return False
+    if value.strip() in {"true", "false", "center", "left", "right", "top", "bottom"}:
+        return False
+    return True
+
+
+def _walk_plugin_ui_json(value: Any, file: Path, prefix: str = "$") -> list[TextEntry]:
+    """Walk custom plugin UI JSON (PKD_PhoneMenu, etc.) extracting translatable text."""
+    entries: list[TextEntry] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_key = f"{prefix}.{key}"
+            if key in _PLUGIN_UI_SKIP_KEYS:
+                continue
+            if key in _PLUGIN_UI_TEXT_KEYS and _is_translatable_ui_text(child):
+                rel = file.relative_to(file.parents[1]) if len(file.parents) > 1 else file.name
+                context = f"rpg_maker_plugin_ui_{rel.parent.name if rel.parent.name != '.' else 'custom'}"
+                entries.append(TextEntry(file=file, key=child_key, source=child, context=context))
+            if key == "text" and isinstance(child, list):
+                for i, item in enumerate(child):
+                    if _is_translatable_ui_text(item):
+                        rel = file.relative_to(file.parents[1]) if len(file.parents) > 1 else file.name
+                        context = f"rpg_maker_plugin_ui_{rel.parent.name if rel.parent.name != '.' else 'custom'}"
+                        entries.append(TextEntry(file=file, key=f"{child_key}[{i}]", source=item, context=context))
+            elif isinstance(child, (dict, list)):
+                entries.extend(_walk_plugin_ui_json(child, file, child_key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            if isinstance(child, str) and _is_translatable_ui_text(child):
+                entries.append(TextEntry(file=file, key=f"{prefix}[{index}]", source=child, context="rpg_maker_plugin_ui_custom"))
+            elif isinstance(child, (dict, list)):
+                entries.extend(_walk_plugin_ui_json(child, file, f"{prefix}[{index}]"))
     return entries
 
 
@@ -466,14 +524,18 @@ def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_contex
         if _is_event_text_command(value):
             entries.append(TextEntry(file=file, key=f"{prefix}.parameters[0]", source=value["parameters"][0], context="rpg_maker_event_text", context_text=local_context))
         if code == 101 and isinstance(params, list) and len(params) >= 5 and _is_text(params[4]):
-            speaker_name = str(params[4])
-            speaker_context = f"[{speaker_name}]" if speaker_name else ""
-            preceding_text = local_context
-            if preceding_text:
-                context_for_speaker = f"{speaker_context}\n{preceding_text}"
-            else:
-                context_for_speaker = speaker_context
-            entries.append(TextEntry(file=file, key=f"{prefix}.parameters[4]", source=params[4], context="rpg_maker_speaker_name", context_text=context_for_speaker))
+            # Speaker name is extracted by _merge_dialogue_blocks when this command
+            # is inside a list. Only extract here if encountered outside a list
+            # (unusual but possible in custom game data).
+            if not any(isinstance(child, list) and any(isinstance(item, dict) and item.get("code") == 101 for item in child) for child in value.values() if isinstance(child, list)):
+                speaker_name = str(params[4])
+                speaker_context = f"[{speaker_name}]" if speaker_name else ""
+                preceding_text = local_context
+                if preceding_text:
+                    context_for_speaker = f"{speaker_context}\n{preceding_text}"
+                else:
+                    context_for_speaker = speaker_context
+                entries.append(TextEntry(file=file, key=f"{prefix}.parameters[4]", source=params[4], context="rpg_maker_speaker_name", context_text=context_for_speaker))
         if _is_event_text_command(value) or (code == 101 and isinstance(params, list) and len(params) >= 5 and _is_text(params[4])):
             return entries
         if _is_choice_command(value):
@@ -570,6 +632,18 @@ def extract_rpg_maker_json(game_dir: Path, plugin_text_extractor=None) -> tuple[
             log_event(msg, level="WARN")
             continue
         entries.extend(_walk_json(data, file, plugin_text_extractor=plugin_text_extractor))
+    for file in data_dir.rglob("*.json"):
+        if file.parent == data_dir:
+            continue
+        if any(part in RPG_MAKER_SKIP_DIRS for part in file.relative_to(data_dir).parts[:-1]):
+            continue
+        if file.name in RPG_MAKER_DATABASE_TEXT_FIELDS or file.name in {"System.json", "CommonEvents.json", "Troops.json"} or file.name.startswith("Map"):
+            continue
+        try:
+            data = json.loads(file.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        entries.extend(_walk_plugin_ui_json(data, file))
     return entries, warnings
 
 
@@ -637,7 +711,7 @@ def _source_data_root(source_file: Path) -> Path | None:
         if parent.parent.name == "www" or (parent / "System.json").exists() or (parent / "Actors.json").exists():
             return parent
         for child in source_file.relative_to(parent).parts:
-            if child.startswith("Map") or child in RPG_MAKER_DATABASE_TEXT_FIELDS or child in {"System.json", "CommonEvents.json", "Troops.json", "PKD_PhoneMenu"}:
+            if child.startswith("Map") or child in RPG_MAKER_DATABASE_TEXT_FIELDS or child in {"System.json", "CommonEvents.json", "Troops.json"} or (parent / child).is_dir():
                 return parent
     return None
 

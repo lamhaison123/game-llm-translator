@@ -6,7 +6,7 @@ Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs 
 
 ## Key features
 
-- **RPG Maker MV/MZ**: extract `www/data/*.json` or `data/*.json`, translate, and apply while preserving nested folder structure
+- **RPG Maker MV/MZ**: extract `www/data/*.json` or `data/*.json`, translate, and apply while preserving nested folder structure including custom plugin subdirectories (PKD_PhoneMenu, etc.)
 - **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` files (`original=translation` format); preserve regex rules/scoping directives in processed files, skip resizer files
 - **Shared translate pipeline** (`translate_pipeline.py`): GUI, CLI, and `auto` use the same retry, memory, dedup, and checkpoint logic
 - **Parallel translation**: 1-8 workers on GUI, `translate`, `pipeline`, and `auto` (`--workers`)
@@ -18,8 +18,10 @@ Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs 
 - **Glossary CSV**: inject fixed terms into the LLM system prompt (GUI or `--glossary` on CLI)
 - **Correction table CSV**: post-translation find/replace rules applied after each batch (GUI or `--correction-table` on CLI)
 - **Token formatting fix**: auto-repairs LLM-introduced spaces in RPG Maker tokens (`\N [1]` → `\N[1]`, `% 1` → `%1`)
+- **Namebox preservation**: auto-restores YEP_MessageCore `\n<Name>` prefixes that LLMs sometimes drop
 - **Dynamic batching by character length**: limits batch size by total characters (`max_chars`) to prevent token overflow on long entries
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
+- **15-language prompt system**: detailed language-specific rules for Vietnamese, Japanese, Chinese, Korean, English, Thai, Indonesian, Portuguese, Russian, French, German, Spanish, Italian, Polish, Turkish, and Arabic — with pronoun maps, honorific handling, onomatopoeia, punctuation conversion, and name transliteration
 - **Cheat plugin**: install/uninstall RPG Maker MV/MZ Cheat UI Plugin (prefers optional bundled archive/cache, falls back to GitHub release)
 - **Desktop GUI** (PySide6 / Qt6):
   - Light/dark mode toggle (custom Qt palette)
@@ -236,7 +238,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-216 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, correction table, token formatting, dynamic batching, translation pipeline, and fan-out dedup.
+216 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, correction table, token formatting, dynamic batching, translation pipeline, and fan-out dedup. 284 tests total including PKD_PhoneMenu extraction, MZ control codes, thread-safe glossary, and prompt context hints.
 
 ## Build executable
 
@@ -322,7 +324,7 @@ Output: `dist/game-translator-gui.app`.
 - `rpg_maker_common.py` / `rpg_maker_mv.py` / `rpg_maker_mz.py`: MV/MZ extract + apply
 - `rpg_maker_cheat.py`: install/uninstall Cheat UI Plugin
 - `xunity.py`: extract + apply Unity XUnity AutoTranslator format
-- `llm.py`: providers (Anthropic, OpenAI, MTL); language-aware system prompt; glossary injection
+- `llm.py`: providers (Anthropic, OpenAI, MTL); language-aware system prompt with 15-language rules; glossary injection
 - `csv_store.py`: atomic CSV save/load
 - `translation_memory.py`: filelock + atomic memory store
 - `glossary.py`: CSV glossary loader + prompt formatter
@@ -334,7 +336,7 @@ Output: `dist/game-translator-gui.app`.
 | Engine | Detect | Extract | Apply | Note |
 |---|---|---|---|---|
 | RPG Maker MV | Yes | Yes | Yes | full support |
-| RPG Maker MZ | Yes | Yes | Yes | full support + plugin command 357 |
+| RPG Maker MZ | Yes | Yes | Yes | full support + plugin command 357 + custom subdirectory extraction (PKD_PhoneMenu, etc.) |
 | Unity (XUnity AutoTranslator) | Yes | Yes | Yes | via `Translation/{lang}/Text/*.txt` |
 | RPG Maker VX Ace | Yes | No | No | detect only (`.rvdata2` parsing needed) |
 | RPG Maker VX / XP | Yes | No | No | detect only |
