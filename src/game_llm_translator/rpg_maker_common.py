@@ -144,7 +144,7 @@ def normalize_gui_game_type(value: str | None) -> str:
 def engine_to_gui_game_type(engine: str | None) -> str:
     if engine == "unity-xunity":
         return "unity-xunity"
-    if engine == "mz":
+    if engine in {"mz", "mv-mz"}:
         return "rpg-maker-mz"
     return "rpg-maker-mv"
 
@@ -153,7 +153,12 @@ def gui_game_type_to_engine(value: str | None) -> str:
     normalized = normalize_gui_game_type(value)
     if normalized == "unity-xunity":
         return "unity-xunity"
-    return "mz" if normalized == "rpg-maker-mz" else "mv"
+    if normalized == "rpg-maker-mz":
+        return "mz"
+    if normalized == "rpg-maker-mv":
+        return "mv"
+    # fallback
+    return "mv"
 
 
 _ONLY_CONTROL_CODE_RE = _re.compile(

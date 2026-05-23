@@ -355,6 +355,31 @@ def test_user_prompt_includes_file_key_id():
     assert item["key"] == "$[1].name"
 
 
+def test_user_prompt_auto_detect_japanese():
+    entry = TextEntry(Path("data/Map001.json"), "$[1].name", "こんにちは")
+    payload = json.loads(_user_prompt([entry], "Vietnamese", None))
+    assert payload["source_language"] == "ja"
+
+
+def test_user_prompt_auto_detect_korean():
+    entry = TextEntry(Path("data/Map001.json"), "$[1].name", "안녕하세요")
+    payload = json.loads(_user_prompt([entry], "Vietnamese", None))
+    assert payload["source_language"] == "ko"
+
+
+def test_user_prompt_auto_detect_chinese():
+    entry = TextEntry(Path("data/Map001.json"), "$[1].name", "你好世界")
+    payload = json.loads(_user_prompt([entry], "Vietnamese", None))
+    assert payload["source_language"] == "zh"
+
+
+def test_user_prompt_auto_detect_korean_before_chinese():
+    """Korean text should be detected as 'ko', not 'zh'."""
+    entry = TextEntry(Path("data/Map001.json"), "$[1].name", "게임 시작")
+    payload = json.loads(_user_prompt([entry], "Vietnamese", None))
+    assert payload["source_language"] == "ko"
+
+
 def test_results_from_json_uses_id_for_duplicate_keys():
     entries = [
         TextEntry(Path("Actors.json"), "$[1].name", "Harold"),

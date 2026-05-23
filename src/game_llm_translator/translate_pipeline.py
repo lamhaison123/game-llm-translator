@@ -279,7 +279,7 @@ def run_translate(
 
     existing: list[TranslationResult] = [] if options.restart else (load_results(translations_csv) if translations_csv.exists() else [])
     results = dedupe_results(existing, wanted_ids)
-    completed = {text_identity(r.file, r.key) for r in results if r.target.strip() and r.target != r.source}
+    completed = {text_identity(r.file, r.key) for r in results if r.target.strip()}
 
     memory_map = load_memory(
         (options.memory_paths or []) + [global_memory_path(), translations_csv.parent / "translation_memory.csv"],
@@ -341,10 +341,11 @@ def run_translate(
             batch_glossary = glossary_block
         if provider is None and not batch_glossary:
             with results_lock:
-                if results:
-                    auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in results])
-                    if auto_entries:
-                        batch_glossary = format_glossary_for_prompt(auto_entries, max_chars=2000)
+                snapshot = list(results)
+            if snapshot:
+                auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in snapshot])
+                if auto_entries:
+                    batch_glossary = format_glossary_for_prompt(auto_entries, max_chars=2000)
         batch_provider = provider if provider is not None else _make_provider(options, batch_glossary)
         try:
             batch_results = translate_batch_with_retry(batch_provider, batch, options.target_lang, options.source_lang, options, report, report_lock)

@@ -29,8 +29,10 @@ def extract_rpg_maker_detailed(game_dir: Path) -> tuple[list[TextEntry], list[st
         )
     if engine == "mz":
         return extract_rpg_maker_mz_detailed(game_dir)
-    if engine in {"mv", "mv-mz"}:
+    if engine == "mv":
         return extract_rpg_maker_mv_detailed(game_dir)
+    if engine == "mv-mz":
+        return extract_rpg_maker_mz_detailed(game_dir)
     return [], []
 
 

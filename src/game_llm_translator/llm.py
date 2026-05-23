@@ -595,7 +595,10 @@ def _user_prompt(entries: Iterable[TextEntry], target_lang: str, source_lang: st
             if any('\u3040' <= c <= '\u30ff' for c in src):
                 source_label = "ja"
                 break
-            if any('\u4e00' <= c <= '\u9fff' or '\uac00' <= c <= '\ud7af' for c in src):
+            if any('\uac00' <= c <= '\ud7af' for c in src):
+                source_label = "ko"
+                break
+            if any('\u4e00' <= c <= '\u9fff' for c in src):
                 source_label = "zh"
                 break
     return json.dumps(

@@ -120,9 +120,9 @@ def _read_manifest(path: Path) -> CheatManifest:
 def detect_cheat_engine(game_dir: Path, selected_game_type: str | None = None) -> Literal["mv", "mz"]:
     selected = normalize_gui_game_type(selected_game_type)
     detected = detect_rpg_maker(game_dir)
-    if detected == "mz" or selected == "rpg-maker-mz":
+    if detected == "mz" or detected == "mv-mz" or selected == "rpg-maker-mz":
         return "mz"
-    if detected in {"mv", "mv-mz"} or selected == "rpg-maker-mv":
+    if detected == "mv" or selected == "rpg-maker-mv":
         return "mv"
     raise ValueError(f"RPG Maker MV/MZ game not detected: {game_dir}")
 
