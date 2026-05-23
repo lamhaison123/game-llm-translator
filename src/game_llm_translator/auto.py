@@ -14,6 +14,7 @@ from .rpg_maker import apply_rpg_maker, detect_rpg_maker, extract_rpg_maker, ext
 from .path_utils import timestamped_unique_path
 from .xunity import apply_xunity, detect_xunity, extract_xunity
 from .unity_setup import detect_unity_bare
+from .font_replacement import ensure_game_fonts_support
 
 
 def _data_dir(game_dir: Path) -> Path:
@@ -226,6 +227,13 @@ def auto_translate_game(
             destination = data_dir / file.relative_to(out_dir)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(file, destination)
+        # Auto-replace font for Vietnamese
+        font_result = ensure_game_fonts_support(game_dir, target_lang)
+        if font_result["replaced"]:
+            log_event(f"Font replaced: {font_result.get('details', '')}", level="INFO")
+            if progress:
+                progress(f"Font replaced: {font_result.get('details', '')}")
+        manifest["font_replacement"] = font_result
         manifest["applied_dir"] = str(data_dir)
         if progress:
             progress(f"Applied translated files -> {data_dir}")

@@ -10,7 +10,7 @@ from pathlib import Path
 from .app_logging import log_event
 from .csv_store import load_results, save_results
 from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories
-from .llm import LLMProvider, make_provider
+from .llm import LLMProvider, make_provider, postprocess_translation
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
 from .validate import check_noun_consistency, format_noun_warnings, translation_warnings
@@ -380,7 +380,12 @@ def run_translate(
         expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
         if corrections:
             expanded = [
-                TranslationResult(r.file, r.key, r.source, apply_correction_table(r.target, corrections), r.context)
+                TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, apply_correction_table(r.target, corrections)), r.context, sub_keys=r.sub_keys)
+                for r in expanded
+            ]
+        else:
+            expanded = [
+                TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, r.target), r.context, sub_keys=r.sub_keys)
                 for r in expanded
             ]
         for item in expanded:

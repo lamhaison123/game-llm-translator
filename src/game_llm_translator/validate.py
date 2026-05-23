@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .llm import TOKEN_PATTERN
+from .llm import TOKEN_PATTERN, _NAMEBOX_PREFIX_RE
 from .models import TranslationResult
 
 _PLACEHOLDER_RE = TOKEN_PATTERN
@@ -67,6 +67,8 @@ def translation_warnings(source: str, target: str, context: str = "") -> list[st
         token = match.group(0)
         if token not in target:
             warnings.append(f"missing placeholder {token!r}")
+    if _NAMEBOX_PREFIX_RE.match(source) and not _NAMEBOX_PREFIX_RE.match(target):
+        warnings.append("missing YEP_MessageCore namebox prefix")
     src_newlines = source.count("\n")
     tgt_newlines = target.count("\n")
     if src_newlines and tgt_newlines != src_newlines:

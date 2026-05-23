@@ -64,6 +64,7 @@ from .rpg_maker_cheat import (
 )
 from .path_utils import timestamped_unique_path
 from .xunity import apply_xunity, detect_xunity, extract_xunity
+from .font_replacement import ensure_game_fonts_support
 
 
 class WorkerSignals(QObject):
@@ -1306,6 +1307,15 @@ class TranslatorGUI(QMainWindow):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(f, dest)
             self._log(f"Applied {len(files)} files -> {data_dir}")
+            # Auto font replacement for Vietnamese
+            try:
+                font_result = ensure_game_fonts_support(game_dir, self.target_lang_edit.text())
+                if font_result["replaced"]:
+                    self._log(f"Font replaced: {font_result.get('details', '')}")
+                else:
+                    self._log(f"Font check: {font_result.get('details', '')}")
+            except Exception as exc:
+                self._log(f"Font replacement skipped: {exc}")
             self.signals.refresh_backups.emit()
         self._run("apply to game", job)
 

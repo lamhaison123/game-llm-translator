@@ -96,6 +96,27 @@ _FIX_BRACKET_RE = re.compile(r'\\(\w+)\s*\[\s*(.*?)\s*\]')
 _FIX_ANGLE_RE = re.compile(r'\\(\w+)\s*<\s*(.*?)\s*>')
 _FIX_PERCENT_RE = re.compile(r'%\s*(\d+)')
 _FIX_BACKSLASH_RE = re.compile(r'\\\s*([{}\$!><\^_\\])')
+_NAMEBOX_PREFIX_RE = re.compile(r'^((?:\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}\.$!><\^_\\]|\s)*)<((?:\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}\.$!><\^_\\]|[^<>]){1,80})>')
+
+
+def _restore_namebox_prefix(source: str, target: str) -> str:
+    """Restore YEP_MessageCore namebox tags that LLMs sometimes remove.
+
+    Many RPG Maker MV games use a leading sequence like ``\\F[N_01]\\n<希>``
+    or ``\\n<\\C[27]彩>`` to display the speaker name. Those tags are
+    executable message control syntax rather than normal prose. If the source
+    starts with such a prefix and the target no longer starts with any namebox,
+    copy the source prefix back so the in-game name window still appears.
+    """
+    if target.lstrip().startswith("<") or _NAMEBOX_PREFIX_RE.match(target):
+        return target
+    match = _NAMEBOX_PREFIX_RE.match(source)
+    if not match:
+        return target
+    prefix = match.group(0)
+    # If translation kept the prose but dropped only the namebox/control prefix,
+    # restore the full source prefix before the translated dialogue.
+    return prefix + target.lstrip()
 
 
 def _fix_token_formatting(text: str) -> str:
@@ -109,6 +130,12 @@ def _fix_token_formatting(text: str) -> str:
     text = _FIX_PERCENT_RE.sub(r'%\1', text)
     text = _FIX_BACKSLASH_RE.sub(r'\\\1', text)
     return text
+
+
+def postprocess_translation(source: str, target: str) -> str:
+    target = _fix_token_formatting(target)
+    target = _restore_namebox_prefix(source, target)
+    return target
 
 
 SYSTEM_PROMPT_BASE = """You are an expert game localizer specializing in RPG Maker and visual novel text translation.
@@ -463,7 +490,7 @@ def _results_from_json(
             stats.fallback += 1
         if token_maps and i < len(token_maps) and token_maps[i]:
             target = _restore_protected_tokens(target, token_maps[i])
-        target = _fix_token_formatting(target)
+        target = postprocess_translation(entry.source, target)
         results.append(TranslationResult(entry.file, entry.key, entry.source, target, entry.context, sub_keys=entry.sub_keys))
     return results, stats
 
@@ -502,7 +529,7 @@ class MTLProvider(LLMProvider):
             masked_source, tokens = _mask_protected_tokens(entry.source)
             target = self.translate_text(masked_source, target_lang, source_lang)
             target = _restore_protected_tokens(target, tokens)
-            target = _fix_token_formatting(target)
+            target = postprocess_translation(entry.source, target)
             results.append(TranslationResult(entry.file, entry.key, entry.source, target or entry.source, entry.context, sub_keys=entry.sub_keys))
             if self.pause_seconds:
                 self._sleep_interruptible(self.pause_seconds)
