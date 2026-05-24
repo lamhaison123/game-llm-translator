@@ -16,6 +16,7 @@ from game_llm_translator.llm import (
     _anthropic_message_text,
     _repair_invalid_escapes,
     _restore_protected_tokens,
+    _restore_namebox_prefix,
     _results_from_json,
     _user_prompt,
     _fix_token_formatting,
@@ -159,6 +160,89 @@ def test_mask_restore_mz_outline_tokens():
     masked, mapping = _mask_protected_tokens(text)
     restored = _restore_protected_tokens(masked, mapping)
     assert restored == text
+
+
+def test_mask_namebox_name_visible():
+    """Speaker name inside <...> must be visible to LLM after masking."""
+    text = "\\n<\\C[22]フォル>「バカな……」"
+    masked, mapping = _mask_protected_tokens(text)
+    assert "フォル" in masked, f"Name should be visible, got: {masked!r}"
+    assert "\\C[22]" not in masked, f"Color code should be masked, got: {masked!r}"
+    assert "\\n" not in masked, f"\\\\n should be masked, got: {masked!r}"
+    assert "<" in masked and ">" in masked, f"Delimiters should be visible, got: {masked!r}"
+
+
+def test_mask_namebox_simple():
+    """Simple \\n<Name> namebox — name visible, \\n masked."""
+    text = "\\n<希>こんにちは"
+    masked, mapping = _mask_protected_tokens(text)
+    assert "希" in masked
+    assert "\\n" not in masked
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
+def test_mask_namebox_with_face():
+    """Face + namebox \\F[N_01]\\n<希> — name visible, control codes masked."""
+    text = "\\F[N_01]\\n<希>待って！"
+    masked, mapping = _mask_protected_tokens(text)
+    assert "希" in masked
+    assert "\\F[N_01]" not in masked
+    assert "\\n" not in masked
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
+def test_mask_non_namebox_angle_brackets():
+    """Non-namebox tags like <area> must still be fully masked."""
+    text = "Score: <area> and %1 damage"
+    masked, mapping = _mask_protected_tokens(text)
+    assert "area" not in masked, f"<area> should be fully masked, got: {masked!r}"
+    assert "<area>" not in masked
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
+def test_mask_namebox_roundtrip():
+    """Mask + restore preserves original text for namebox content."""
+    text = "\\n<\\C[22]フォル>「バカな……この氷は……」"
+    masked, mapping = _mask_protected_tokens(text)
+    restored = _restore_protected_tokens(masked, mapping)
+    assert restored == text
+
+
+def test_restore_namebox_preserves_translated_name():
+    """If LLM translates the name inside <...>, keep the translated name."""
+    source = "\\n<\\C[22]フォル>「バカな……」"
+    target = "\\n<\\C[22]Foru>\"Không thể nào...\""
+    result = _restore_namebox_prefix(source, target)
+    assert "Foru" in result, f"Translated name should be kept, got: {result!r}"
+    assert "\\C[22]" in result, f"Color code should be preserved, got: {result!r}"
+
+
+def test_restore_namebox_restores_dropped_prefix():
+    """If LLM drops the namebox entirely, restore the source prefix."""
+    source = "\\n<\\C[22]フォル>「バカな……」"
+    target = "\"Không thể nào...\""
+    result = _restore_namebox_prefix(source, target)
+    assert result.startswith("\\n<\\C[22]フォル>"), f"Prefix should be restored, got: {result!r}"
+
+
+def test_restore_namebox_restores_dropped_color_code():
+    """If LLM translates the name but drops color codes inside <...>, restore them."""
+    source = "\\n<\\C[22]フォル>「バカな……」"
+    target = "\\n<Foru>\"Không thể nào...\""
+    result = _restore_namebox_prefix(source, target)
+    assert "Foru" in result, f"Translated name should be kept, got: {result!r}"
+    assert "\\C[22]" in result, f"Color code should be restored, got: {result!r}"
+
+
+def test_restore_namebox_same_name_no_change():
+    """If LLM keeps the namebox with same name, no change needed."""
+    source = "\\n<\\C[22]フォル>「バカな……」"
+    target = "\\n<\\C[22]フォル>\"Không thể nào...\""
+    result = _restore_namebox_prefix(source, target)
+    assert result == target
 
 
 # ---------------------------------------------------------------------------

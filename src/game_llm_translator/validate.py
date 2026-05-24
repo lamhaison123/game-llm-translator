@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from .llm import TOKEN_PATTERN, _NAMEBOX_PREFIX_RE
+import re
+
+from .llm import _INNER_CTRL_RE, _NON_NAMEBOX_TAG_RE, _NAMEBOX_PREFIX_RE
 from .models import TranslationResult
 
-_PLACEHOLDER_RE = TOKEN_PATTERN
+_PLACEHOLDER_RE = re.compile(
+    _INNER_CTRL_RE.pattern + "|" + _NON_NAMEBOX_TAG_RE.pattern
+)
 
 _NAME_CONTEXTS = frozenset({
     "rpg_maker_actors_name",

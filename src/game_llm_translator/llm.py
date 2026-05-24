@@ -66,9 +66,17 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
         return normalized
     raise ValueError(f"Unsupported language: {language!r}. Use a known name (e.g. Vietnamese) or ISO code (vi).")
 
-TOKEN_PATTERN = re.compile(
-    r"(\\F[A-Za-z]*\[[^\]]*\]|\\OC\[\d+\]|\\OO\[\d+\]|\\FS\[\d+\]|\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^_\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|<[^<>]{1,120}>|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
+# Matches RPG Maker control codes, format placeholders, and non-namebox angle-bracket tags.
+# Namebox angle brackets <Name> are handled separately in _mask_protected_tokens
+# so that speaker names inside <...> remain visible to the LLM for translation.
+_INNER_CTRL_RE = re.compile(
+    r"(\\F[A-Za-z]*\[[^\]]*\]|\\OC\[\d+\]|\\OO\[\d+\]|\\FS\[\d+\]|\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^_\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
 )
+# Matches non-namebox angle-bracket tags like <area>, <ItemImage:path>, <N_01>.
+# These are NOT YEP_MessageCore nameboxes — they are RPG Maker placeholders that
+# must stay fully opaque. A namebox is identified by having control codes (\\n, \\F, etc.)
+# before the opening <.
+_NON_NAMEBOX_TAG_RE = re.compile(r"<[^<>]{1,120}>")
 
 
 def _mask_protected_tokens(text: str) -> tuple[str, dict[str, str]]:
@@ -79,7 +87,35 @@ def _mask_protected_tokens(text: str) -> tuple[str, dict[str, str]]:
         mapping[token] = match.group(0)
         return token
 
-    return TOKEN_PATTERN.sub(replace, text), mapping
+    # Phase 1: Detect namebox prefixes (e.g. \n<Name>, \F[N_01]\n<希>, \n<\C[22]フォル>).
+    # For nameboxes, we mask only control codes inside <...> but keep the speaker
+    # name visible so the LLM can translate it. We also mask control codes before
+    # the < and keep < > delimiters visible.
+    namebox_match = _NAMEBOX_PREFIX_RE.match(text)
+    if namebox_match:
+        ctrl_before = namebox_match.group(1)   # e.g. \n or \F[N_01]\n
+        name_content = namebox_match.group(2)   # e.g. フォル or \C[22]フォル
+        after_namebox = text[namebox_match.end():]
+
+        # Mask control codes before < (e.g. \n, \F[N_01])
+        masked_ctrl = _INNER_CTRL_RE.sub(replace, ctrl_before)
+
+        # Mask control codes inside <...> but leave name text visible
+        masked_name = _INNER_CTRL_RE.sub(replace, name_content)
+
+        # Reconstruct with < > delimiters visible
+        partial = masked_ctrl + "<" + masked_name + ">"
+
+        # Phase 2: Mask remaining tokens in the text after the namebox
+        # (and any non-namebox <...> tags in the rest of the text)
+        masked_rest = _INNER_CTRL_RE.sub(replace, after_namebox)
+        masked_rest = _NON_NAMEBOX_TAG_RE.sub(replace, masked_rest)
+        return partial + masked_rest, mapping
+
+    # No namebox prefix — apply all masking patterns
+    result = _INNER_CTRL_RE.sub(replace, text)
+    result = _NON_NAMEBOX_TAG_RE.sub(replace, result)
+    return result, mapping
 
 
 def _restore_protected_tokens(text: str, mapping: dict[str, str]) -> str:
@@ -100,23 +136,40 @@ _NAMEBOX_PREFIX_RE = re.compile(r'^((?:\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}\.
 
 
 def _restore_namebox_prefix(source: str, target: str) -> str:
-    """Restore YEP_MessageCore namebox tags that LLMs sometimes remove.
+    """Restore or fix YEP_MessageCore namebox tags in the translated text.
 
-    Many RPG Maker MV games use a leading sequence like ``\\F[N_01]\\n<希>``
-    or ``\\n<\\C[27]彩>`` to display the speaker name. Those tags are
-    executable message control syntax rather than normal prose. If the source
-    starts with such a prefix and the target no longer starts with any namebox,
-    copy the source prefix back so the in-game name window still appears.
+    Handles three cases:
+    1. Target has a namebox with a translated name → keep the translated name,
+       but restore any control codes from the source namebox that the LLM dropped.
+    2. Target has a namebox with the same name → no change needed.
+    3. Target dropped the namebox entirely → restore the full source prefix.
     """
-    if target.lstrip().startswith("<") or _NAMEBOX_PREFIX_RE.match(target):
+    src_match = _NAMEBOX_PREFIX_RE.match(source)
+    if not src_match:
         return target
-    match = _NAMEBOX_PREFIX_RE.match(source)
-    if not match:
+    src_ctrl = src_match.group(1)   # e.g. \n or \F[N_01]\n
+    src_name = src_match.group(2)   # e.g. フォル or \C[22]フォル
+
+    tgt_match = _NAMEBOX_PREFIX_RE.match(target)
+    if tgt_match:
+        # Target has a namebox — the LLM may have translated the name.
+        # Restore control codes that the LLM may have dropped from inside <...>.
+        tgt_ctrl = tgt_match.group(1)
+        tgt_name = tgt_match.group(2)
+        # Extract control codes from source name content (e.g. \C[22] from \C[22]フォル)
+        src_name_ctrls = [m.group(0) for m in _INNER_CTRL_RE.finditer(src_name)]
+        tgt_name_ctrls = [m.group(0) for m in _INNER_CTRL_RE.finditer(tgt_name)]
+        if src_name_ctrls and not tgt_name_ctrls:
+            # LLM dropped control codes inside <...> — prepend source control codes
+            # to the target name, keeping the translated name text.
+            tgt_name_text = _INNER_CTRL_RE.sub("", tgt_name)
+            restored_name = "".join(src_name_ctrls) + tgt_name_text
+            restored_prefix = tgt_ctrl + "<" + restored_name + ">"
+            return restored_prefix + target[tgt_match.end():]
         return target
-    prefix = match.group(0)
-    # If translation kept the prose but dropped only the namebox/control prefix,
-    # restore the full source prefix before the translated dialogue.
-    return prefix + target.lstrip()
+
+    # Target dropped the namebox entirely — restore the full source prefix.
+    return src_match.group(0) + target.lstrip()
 
 
 def _fix_token_formatting(text: str) -> str:
