@@ -120,14 +120,29 @@ def _read_manifest(path: Path) -> CheatManifest:
 def detect_cheat_engine(game_dir: Path, selected_game_type: str | None = None) -> Literal["mv", "mz"]:
     selected = normalize_gui_game_type(selected_game_type)
     detected = detect_rpg_maker(game_dir)
+
+    if selected == "unity-xunity":
+        raise ValueError("Cheat plugin is only available for RPG Maker MV/MZ games, not Unity.")
+
     if detected == "mz" or detected == "mv":
         return detected
+
+    if detected is not None and detected not in {"mv-mz"}:
+        raise ValueError(
+            f"Detected engine is {detected.upper()}, which is not supported by the cheat plugin. "
+            "Only RPG Maker MV/MZ are supported."
+        )
+
+    if detected == "mv-mz":
+        if selected_game_type in {"rpg-maker-mv", "mv"}:
+            return "mv"
+        return "mz"
+
     if selected == "rpg-maker-mz":
         return "mz"
     if selected == "rpg-maker-mv":
         return "mv"
-    if detected == "mv-mz":
-        return "mz"
+
     raise ValueError(f"RPG Maker MV/MZ game not detected: {game_dir}")
 
 

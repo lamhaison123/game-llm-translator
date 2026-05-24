@@ -49,11 +49,30 @@ def test_detect_cheat_engine_user_mz_overrides_ambiguous_mv_mz(tmp_path):
     assert cheat.detect_cheat_engine(tmp_path, "rpg-maker-mz") == "mz"
 
 
-def test_detect_cheat_engine_rejects_unknown_when_detection_and_selection_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(cheat, "normalize_gui_game_type", lambda value: value or "")
+def test_detect_cheat_engine_ambiguous_defaults_to_mz(tmp_path):
+    """When detection is ambiguous (mv-mz) and no game type is selected, default to MZ."""
+    (tmp_path / "data").mkdir()
 
-    with pytest.raises(ValueError, match="RPG Maker MV/MZ game not detected"):
-        cheat.detect_cheat_engine(tmp_path, None)
+    assert cheat.detect_cheat_engine(tmp_path, None) == "mz"
+
+
+def test_detect_cheat_engine_rejects_unity_xunity(tmp_path):
+    """Unity game type should not proceed to cheat engine installation."""
+    (tmp_path / "data").mkdir()
+    with pytest.raises(ValueError, match="Cheat plugin is only available for RPG Maker MV/MZ"):
+        cheat.detect_cheat_engine(tmp_path, "unity-xunity")
+
+
+def test_detect_cheat_engine_rejects_unsupported_engine(tmp_path, monkeypatch):
+    """VX Ace games should not have cheat plugin installed."""
+    monkeypatch.setattr(cheat, "detect_rpg_maker", lambda path: "vx-ace")
+    with pytest.raises(ValueError, match="not supported by the cheat plugin"):
+        cheat.detect_cheat_engine(tmp_path, "rpg-maker-mv")
+
+
+def test_detect_cheat_engine_no_detection_with_default_returns_mv(tmp_path):
+    """When no RPG Maker markers are found and no game type is selected, default to MV."""
+    assert cheat.detect_cheat_engine(tmp_path, None) == "mv"
 
 
 def test_safe_zip_members_rejects_path_traversal(tmp_path):
