@@ -28,14 +28,22 @@ def _write_tar_gz(path, files: dict[str, str]) -> None:
             archive.addfile(info, io.BytesIO(data))
 
 
-def test_detect_cheat_engine_prefers_detected_mz(tmp_path):
+def test_detect_cheat_engine_detected_mz_overrides_user_mv(tmp_path):
+    """When engine is definitively detected as MZ (rmmz_core.js), detection wins over user selection."""
     (tmp_path / "js").mkdir()
     (tmp_path / "js" / "rmmz_core.js").write_text("")
 
     assert cheat.detect_cheat_engine(tmp_path, "rpg-maker-mv") == "mz"
 
 
-def test_detect_cheat_engine_uses_selected_for_ambiguous_mv_mz(tmp_path):
+def test_detect_cheat_engine_user_mv_overrides_ambiguous_mv_mz(tmp_path):
+    """When detection is ambiguous (mv-mz), user selection should win."""
+    (tmp_path / "data").mkdir()
+
+    assert cheat.detect_cheat_engine(tmp_path, "rpg-maker-mv") == "mv"
+
+
+def test_detect_cheat_engine_user_mz_overrides_ambiguous_mv_mz(tmp_path):
     (tmp_path / "data").mkdir()
 
     assert cheat.detect_cheat_engine(tmp_path, "rpg-maker-mz") == "mz"
