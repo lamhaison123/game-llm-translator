@@ -20,6 +20,7 @@ from game_llm_translator.llm import (
     _results_from_json,
     _user_prompt,
     _fix_token_formatting,
+    _build_system_prompt,
 )
 from game_llm_translator.models import TextEntry
 
@@ -252,6 +253,14 @@ def test_namebox_warning_when_speaker_name_left_untranslated():
     target = "\\FF[greima_13]\\n<\\C[27]グレーマ>「Vậy thì… ngày mai gặp lại nhé……」"
 
     assert "namebox speaker name was not translated" in translation_warnings(source, target, "rpg_maker_event_text")
+
+
+def test_system_prompt_requires_translating_namebox_speaker_names():
+    prompt = _build_system_prompt("Vietnamese")
+
+    assert "MUST translate or transliterate the speaker name inside <...>" in prompt
+    assert "<\\C[27]グレーマ>" in prompt
+    assert "<\\C[27]Gurema>" in prompt
 
 
 # ---------------------------------------------------------------------------

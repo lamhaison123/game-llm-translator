@@ -223,6 +223,10 @@ These tokens MUST appear in the target text unchanged. Never translate, remove, 
 Some RPG Maker MV/MZ games use the Yanfly MessageCore plugin to display speaker names in a name box window.
 - Pattern: the dialogue line STARTS with \\n<Name> or a control-code prefix followed by \\n<Name>, e.g. \\F[N_01]\\n<希> or \\C[27]\\n<彩> or just \\n<Alice>.
 - The text inside <...> is the speaker name displayed in the name box — translate it like any speaker name.
+- You MUST translate or transliterate the speaker name inside <...> for Latin-script target languages; do not leave CJK speaker names unchanged.
+- Keep control codes inside the namebox unchanged, but translate the visible name text after those codes.
+- If the same speaker name appears in the dialogue body, use the exact same translated spelling in both the namebox and the body.
+- Example for Vietnamese: \\F[greima_10]\\n<\\C[27]グレーマ>「グレーマは……」 -> \\F[greima_10]\\n<\\C[27]Gurema>「Gurema là……」.
 - Keep ALL control codes BEFORE the <Name> tag unchanged (they style the name box appearance).
 - If the source has a namebox prefix and the translation drops it, the in-game name window will disappear — ALWAYS preserve it.
 
