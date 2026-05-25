@@ -245,6 +245,15 @@ def test_restore_namebox_same_name_no_change():
     assert result == target
 
 
+def test_namebox_warning_when_speaker_name_left_untranslated():
+    from game_llm_translator.validate import translation_warnings
+
+    source = "\\FF[greima_13]\\n<\\C[27]グレーマ>「それじゃあ……また明日会いましょう……」"
+    target = "\\FF[greima_13]\\n<\\C[27]グレーマ>「Vậy thì… ngày mai gặp lại nhé……」"
+
+    assert "namebox speaker name was not translated" in translation_warnings(source, target, "rpg_maker_event_text")
+
+
 # ---------------------------------------------------------------------------
 # _parse_translation_json
 # ---------------------------------------------------------------------------

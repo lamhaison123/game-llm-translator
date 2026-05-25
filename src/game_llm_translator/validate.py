@@ -5,6 +5,8 @@ import re
 from .llm import _INNER_CTRL_RE, _NON_NAMEBOX_TAG_RE, _NAMEBOX_PREFIX_RE
 from .models import TranslationResult
 
+_CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힣]")
+
 _PLACEHOLDER_RE = re.compile(
     _INNER_CTRL_RE.pattern + "|" + _NON_NAMEBOX_TAG_RE.pattern
 )
@@ -62,6 +64,13 @@ _DESCRIPTION_CONTEXTS = frozenset({
 })
 
 
+def _namebox_visible_name(text: str) -> str:
+    match = _NAMEBOX_PREFIX_RE.match(text)
+    if not match:
+        return ""
+    return _INNER_CTRL_RE.sub("", match.group(2)).strip()
+
+
 def translation_warnings(source: str, target: str, context: str = "") -> list[str]:
     """Return non-fatal quality warnings for a source/target pair."""
     if not target.strip() or target == source:
@@ -73,6 +82,10 @@ def translation_warnings(source: str, target: str, context: str = "") -> list[st
             warnings.append(f"missing placeholder {token!r}")
     if _NAMEBOX_PREFIX_RE.match(source) and not _NAMEBOX_PREFIX_RE.match(target):
         warnings.append("missing YEP_MessageCore namebox prefix")
+    source_name = _namebox_visible_name(source)
+    target_name = _namebox_visible_name(target)
+    if source_name and source_name == target_name and _CJK_RE.search(source_name):
+        warnings.append("namebox speaker name was not translated")
     src_newlines = source.count("\n")
     tgt_newlines = target.count("\n")
     if src_newlines and tgt_newlines != src_newlines:

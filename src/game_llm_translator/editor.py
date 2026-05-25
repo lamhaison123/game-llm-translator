@@ -6,9 +6,12 @@ import sys
 
 
 def open_file_editor(file: Path) -> None:
-    """Open a CSV in the user's default editor/spreadsheet app."""
+    """Open a file in the user's default editor, or a folder in Explorer/Finder."""
     if sys.platform.startswith("win"):
-        subprocess.Popen(["cmd", "/c", "start", "", str(file)])
+        if file.is_dir():
+            subprocess.Popen(["explorer", str(file)])
+        else:
+            subprocess.Popen(["cmd", "/c", "start", "", str(file)])
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(file)])
     else:
