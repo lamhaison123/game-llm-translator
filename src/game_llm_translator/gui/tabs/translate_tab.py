@@ -174,26 +174,40 @@ class TranslateTabMixin:
         return results
 
     def auto_translate(self) -> None:
+        # Read widget values on the main thread before starting the worker
+        source_lang_raw = self.source_lang_edit.text()
+        source = None if source_lang_raw.lower() == "auto" else source_lang_raw
+        target_lang = self.target_lang_edit.text()
+        provider = self.provider_combo.currentText()
+        model = self.model_edit.text() or self.provider_combo.currentText()
+        api_key = self.api_key_edit.text().strip() or None
+        api_base = self.api_base_edit.text().strip() or None
+        batch_size = int(self.batch_size_spin.value())
+        workers = max(1, min(8, int(self.workers_spin.value())))
+        restart = self.restart_check.isChecked()
+        use_memory = self.reuse_memory_check.isChecked()
+        save_memory = self.save_memory_check.isChecked()
+        glossary_path = Path(self.glossary_path_edit.text()) if self.glossary_path_edit.text().strip() else None
+
         def job() -> None:
-            source = None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text()
             game_dir = self._game_dir_path()
             self._set_default_work_paths(game_dir, use_signals=True)
             out = auto_translate_game(
                 game_dir=game_dir,
-                target_lang=self.target_lang_edit.text(),
+                target_lang=target_lang,
                 source_lang=source,
-                provider=self.provider_combo.currentText(),
-                model=self.model_edit.text() or self.provider_combo.currentText(),
-                api_key=self.api_key_edit.text().strip() or None,
-                api_base=self.api_base_edit.text().strip() or None,
-                batch_size=int(self.batch_size_spin.value()),
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                api_base=api_base,
+                batch_size=batch_size,
                 work_dir=game_dir / "translator_work",
                 in_place=False,
-                restart=self.restart_check.isChecked(),
-                use_memory=self.reuse_memory_check.isChecked(),
-                save_memory=self.save_memory_check.isChecked(),
-                glossary_path=Path(self.glossary_path_edit.text()) if self.glossary_path_edit.text().strip() else None,
-                workers=max(1, min(8, int(self.workers_spin.value()))),
+                restart=restart,
+                use_memory=use_memory,
+                save_memory=save_memory,
+                glossary_path=glossary_path,
+                workers=workers,
                 progress=lambda m: (self._check_stopped(), self._log(m))[1],
             )
             self.signals.set_text.emit("out_dir", str(out))
@@ -201,6 +215,9 @@ class TranslateTabMixin:
         self._run("auto translate export", job)
 
     def pipeline(self) -> None:
+        # Read widget values on the main thread before starting the worker
+        game_type = self.game_type_combo.currentText()
+
         def job() -> None:
             entries = self._extract_entries()
             self._check_stopped()
@@ -209,7 +226,7 @@ class TranslateTabMixin:
             results = self._translate_entries(entries, Path(self.translations_csv_edit.text()))
             self._check_stopped()
             out_dir = Path(self.out_dir_edit.text())
-            if self.game_type_combo.currentText() == "unity-xunity":
+            if game_type == "unity-xunity":
                 apply_xunity(results, out_dir)
             else:
                 apply_rpg_maker(results, out_dir)

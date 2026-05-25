@@ -404,7 +404,14 @@ class PreviewTabMixin:
             restart=True,
             on_log=self._log,  # type: ignore[assignment]
             stop_event=self.stop_requested,
+            on_batch_results=lambda batch: self.signals.result_batch.emit(batch),
         )
+
+        # Check for running task before disabling buttons to avoid stuck UI
+        if self.current_worker is not None and self.current_worker.is_alive():
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Preview", "Another task is already running")
+            return
 
         self.preview_start_btn.setEnabled(False)
         self.preview_stop_btn.setEnabled(True)

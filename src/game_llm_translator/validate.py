@@ -8,7 +8,7 @@ from .models import TranslationResult
 _CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힣]")
 
 _PLACEHOLDER_RE = re.compile(
-    _INNER_CTRL_RE.pattern + "|" + _NON_NAMEBOX_TAG_RE.pattern
+    _INNER_CTRL_RE.pattern + "|(?:<[^<>]{1,120}>)"
 )
 
 _NAME_CONTEXTS = frozenset({
@@ -71,12 +71,29 @@ def _namebox_visible_name(text: str) -> str:
     return _INNER_CTRL_RE.sub("", match.group(2)).strip()
 
 
+def _namebox_bracket_span(text: str) -> tuple[int, int] | None:
+    """Return (start, end) of the <...> bracket portion of a namebox prefix, or None."""
+    match = _NAMEBOX_PREFIX_RE.match(text)
+    if not match:
+        return None
+    # The <...> bracket starts after the control-code prefix (group 1).
+    start = len(match.group(1))
+    end = match.end()  # position right after >
+    return (start, end)
+
+
 def translation_warnings(source: str, target: str, context: str = "") -> list[str]:
     """Return non-fatal quality warnings for a source/target pair."""
     if not target.strip() or target == source:
         return []
     warnings: list[str] = []
+    # Identify the namebox <...> span in source so we skip it as a placeholder check.
+    # Namebox names are expected to change during translation, so a mismatch is not
+    # a "missing placeholder" — it's covered by the dedicated namebox checks below.
+    namebox_span = _namebox_bracket_span(source)
     for match in _PLACEHOLDER_RE.finditer(source):
+        if namebox_span and match.start() >= namebox_span[0] and match.end() <= namebox_span[1]:
+            continue  # skip <Name> bracket tokens inside namebox prefix
         token = match.group(0)
         if token not in target:
             warnings.append(f"missing placeholder {token!r}")

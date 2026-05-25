@@ -225,8 +225,10 @@ Some RPG Maker MV/MZ games use the Yanfly MessageCore plugin to display speaker 
 - The text inside <...> is the speaker name displayed in the name box — translate it like any speaker name.
 - You MUST translate or transliterate the speaker name inside <...> for Latin-script target languages; do not leave CJK speaker names unchanged.
 - Keep control codes inside the namebox unchanged, but translate the visible name text after those codes.
+- When the name inside <...> contains CJK characters, ALWAYS translate them. For example: \\n<長老> must become \\n<Trưởng lão> (Vietnamese), \\n<长老> must become \\n<Zhanglao> (English), \\n<フォル> must become \\n<Foru>. NEVER leave CJK characters inside <...> untranslated.
 - If the same speaker name appears in the dialogue body, use the exact same translated spelling in both the namebox and the body.
 - Example for Vietnamese: \\F[greima_10]\\n<\\C[27]グレーマ>「グレーマは……」 -> \\F[greima_10]\\n<\\C[27]Gurema>「Gurema là……」.
+- Example for Vietnamese: \\n<\\C[0]長老>「安心したまえ」 -> \\n<\\C[0]Trưởng lão>「Hãy yên tâm」 (NOT \\n<\\C[0]長老>).
 - Keep ALL control codes BEFORE the <Name> tag unchanged (they style the name box appearance).
 - If the source has a namebox prefix and the translation drops it, the in-game name window will disappear — ALWAYS preserve it.
 

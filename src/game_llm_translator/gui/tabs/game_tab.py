@@ -95,10 +95,14 @@ class GameTabMixin:
             self.refresh_xunity_status()
 
     def scan(self) -> None:
+        # Read widget values on the main thread before starting the worker
+        provider = self.provider_combo.currentText()
+        target_lang = self.target_lang_edit.text()
+
         def job() -> None:
             game_dir = self._game_dir_path()
             self.signals.set_text.emit("scan_summary", "Scanning...")
-            report = analyze_game(game_dir, self.provider_combo.currentText(), self.target_lang_edit.text())
+            report = analyze_game(game_dir, provider, target_lang)
             self._set_default_work_paths(game_dir, use_signals=True)
             if report["engine"] in {"mv", "mz", "mv-mz"}:
                 self.signals.set_text.emit("game_type", engine_to_gui_game_type(str(report["engine"])))

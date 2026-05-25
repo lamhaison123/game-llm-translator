@@ -38,6 +38,7 @@ class TranslateOptions:
     restart: bool = False
     on_log: LogFn | None = None
     stop_event: threading.Event | None = None
+    on_batch_results: Callable[[list[TranslationResult]], None] | None = None
 
 
 @dataclass(slots=True)
@@ -280,6 +281,9 @@ def run_translate(
     existing: list[TranslationResult] = [] if options.restart else (load_results(translations_csv) if translations_csv.exists() else [])
     results = dedupe_results(existing, wanted_ids)
     completed = {text_identity(r.file, r.key) for r in results if r.target.strip()}
+    fallback_in_completed = sum(1 for r in results if r.target.strip() and r.target == r.source)
+    if fallback_in_completed and not options.restart:
+        _log(options, f"Note: {fallback_in_completed} fallback entries (target==source) will be kept as-is. Use --restart to re-translate them.")
 
     memory_map = load_memory(
         (options.memory_paths or []) + [global_memory_path(), translations_csv.parent / "translation_memory.csv"],
@@ -421,6 +425,11 @@ def run_translate(
             _log(options, f"Translated {min(translated_count, len(entries))}/{len(entries)}")
             if on_progress:
                 on_progress(min(translated_count, len(entries)), len(entries))
+        if options.on_batch_results:
+            try:
+                options.on_batch_results(list(expanded))
+            except Exception:
+                pass
 
     try:
         if workers == 1:
