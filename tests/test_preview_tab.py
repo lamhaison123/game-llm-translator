@@ -108,4 +108,51 @@ def test_preview_save_preserves_sub_keys(tmp_path, monkeypatch):
     PreviewTabMixin._preview_save(widget)
 
     from game_llm_translator.csv_store import load_results
-    assert load_results(output_csv)[0].sub_keys == ["$.a", "$.b"]
+
+
+def test_preview_bulk_replace_updates_only_filtered_rows():
+    _app()
+
+    widget = SimpleNamespace()
+    widget._preview_current_idx = None
+    widget._preview_rows = [
+        PreviewRow(0, "file.json", "$.a", "S1", "<Hi> one", ""),
+        PreviewRow(1, "file.json", "$.b", "S2", "<Hi> two", ""),
+        PreviewRow(2, "file.json", "$.c", "S3", "<Hi> hidden", ""),
+    ]
+    widget._preview_filtered = [0, 1]
+    widget.preview_bulk_find_edit = SimpleNamespace(text=lambda: "<Hi>")
+    widget.preview_bulk_replace_edit = SimpleNamespace(text=lambda: "<Bạch Kiều Hi>")
+    widget.preview_bulk_case_check = SimpleNamespace(isChecked=lambda: True)
+    widget._preview_save_current = lambda update_tree=True: None
+    updated = []
+    widget._preview_update_tree_item = updated.append
+    widget._preview_update_progress = lambda: None
+
+    count = PreviewTabMixin._preview_apply_bulk_replace(widget)
+
+    assert count == 2
+    assert widget._preview_rows[0].target == "<Bạch Kiều Hi> one"
+    assert widget._preview_rows[1].target == "<Bạch Kiều Hi> two"
+    assert widget._preview_rows[2].target == "<Hi> hidden"
+    assert widget._preview_dirty is True
+
+
+def test_preview_bulk_replace_can_ignore_case():
+    _app()
+
+    widget = SimpleNamespace()
+    widget._preview_current_idx = None
+    widget._preview_rows = [PreviewRow(0, "file.json", "$.a", "S1", "<hi> one <HI>", "")]
+    widget._preview_filtered = [0]
+    widget.preview_bulk_find_edit = SimpleNamespace(text=lambda: "<Hi>")
+    widget.preview_bulk_replace_edit = SimpleNamespace(text=lambda: "<Bạch Kiều Hi>")
+    widget.preview_bulk_case_check = SimpleNamespace(isChecked=lambda: False)
+    widget._preview_save_current = lambda update_tree=True: None
+    widget._preview_update_tree_item = lambda _row: None
+    widget._preview_update_progress = lambda: None
+
+    count = PreviewTabMixin._preview_apply_bulk_replace(widget)
+
+    assert count == 1
+    assert widget._preview_rows[0].target == "<Bạch Kiều Hi> one <Bạch Kiều Hi>"

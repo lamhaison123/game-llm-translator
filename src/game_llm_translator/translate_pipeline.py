@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .app_logging import log_event
 from .csv_store import load_results, save_results
-from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories
+from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories, speaker_name_glossary_from_results
 from .llm import LLMProvider, make_provider, postprocess_translation
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
@@ -343,7 +343,12 @@ def run_translate(
             with results_lock:
                 snapshot = list(results)
             if snapshot:
-                auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in snapshot])
+                snapshot_terms = [(r.source, r.target, r.context) for r in snapshot]
+                auto_entries = build_auto_glossary(snapshot_terms)
+                speaker_entries = speaker_name_glossary_from_results(snapshot_terms)
+                if speaker_entries:
+                    speaker_terms = {term for term, _ in speaker_entries}
+                    auto_entries = speaker_entries + [entry for entry in auto_entries if entry[0] not in speaker_terms]
                 if auto_entries:
                     batch_glossary = format_glossary_for_prompt(auto_entries, max_chars=2000)
         batch_provider = provider if provider is not None else _make_provider(options, batch_glossary)
@@ -425,7 +430,12 @@ def run_translate(
                 if provider is not None and len(batches) > 1:
                     with results_lock:
                         if results:
-                            auto_entries = build_auto_glossary([(r.source, r.target, r.context) for r in results])
+                            result_terms = [(r.source, r.target, r.context) for r in results]
+                            auto_entries = build_auto_glossary(result_terms)
+                            speaker_entries = speaker_name_glossary_from_results(result_terms)
+                            if speaker_entries:
+                                speaker_terms = {term for term, _ in speaker_entries}
+                                auto_entries = speaker_entries + [entry for entry in auto_entries if entry[0] not in speaker_terms]
                             if auto_entries:
                                 auto_block = format_glossary_for_prompt(auto_entries, max_chars=2000)
                                 with glossary_lock:

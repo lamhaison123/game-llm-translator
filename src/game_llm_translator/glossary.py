@@ -4,6 +4,8 @@ import csv
 import re as _re
 from pathlib import Path
 
+_NAMEBOX_RE = _re.compile(r"<([^<>]{1,80})>")
+
 
 def load_glossary(path: Path | None) -> list[tuple[str, str]]:
     """Load (term, translation) pairs from a CSV with columns: term, translation, [note].
@@ -177,6 +179,32 @@ def format_glossary_categorized(entries: list[tuple[str, str, str]], max_chars: 
     if truncated:
         parts.append("(...more terms omitted to keep prompt short)\n")
     return "".join(parts)
+
+
+
+def speaker_name_glossary_from_results(results: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
+    actor_names: dict[str, str] = {}
+    for source, target, context in results:
+        if context != "rpg_maker_actors_name" or not target.strip() or target == source:
+            continue
+        actor_names[source] = target.strip()
+
+    speaker_aliases: set[str] = set()
+    for source, _target, context in results:
+        if context != "rpg_maker_event_text":
+            continue
+        match = _NAMEBOX_RE.search(source)
+        if match:
+            speaker_aliases.add(match.group(1).strip())
+
+    glossary: dict[str, str] = {}
+    for source, translation in actor_names.items():
+        aliases = [alias for alias in speaker_aliases if source.endswith(alias)]
+        terms = aliases or [source]
+        for term in terms:
+            if term and term not in glossary:
+                glossary[term] = translation
+    return list(glossary.items())
 
 
 def build_auto_glossary(

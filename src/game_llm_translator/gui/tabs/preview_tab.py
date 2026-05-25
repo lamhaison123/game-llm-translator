@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSpinBox,
+    QCheckBox,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -183,6 +185,22 @@ class PreviewTabMixin:
         self.preview_count_label = QLabel("")
         filters.addWidget(self.preview_count_label)
         outer.addLayout(filters)
+
+        bulk = QHBoxLayout()
+        bulk.addWidget(QLabel("Bulk replace target:"))
+        self.preview_bulk_find_edit = QLineEdit()
+        self.preview_bulk_find_edit.setPlaceholderText("Find...")
+        bulk.addWidget(self.preview_bulk_find_edit, 1)
+        self.preview_bulk_replace_edit = QLineEdit()
+        self.preview_bulk_replace_edit.setPlaceholderText("Replace with...")
+        bulk.addWidget(self.preview_bulk_replace_edit, 1)
+        self.preview_bulk_case_check = QCheckBox("Case sensitive")
+        self.preview_bulk_case_check.setChecked(True)
+        bulk.addWidget(self.preview_bulk_case_check)
+        bulk_btn = QPushButton("Replace in Filtered Rows")
+        bulk_btn.clicked.connect(self._preview_confirm_bulk_replace)
+        bulk.addWidget(bulk_btn)
+        outer.addLayout(bulk)
 
         # --- Table ---
         self.preview_tree = QTreeWidget()
@@ -511,6 +529,72 @@ class PreviewTabMixin:
         for c in range(6):
             item.setForeground(c, color)
 
+    def _preview_confirm_bulk_replace(self) -> None:
+        find = self.preview_bulk_find_edit.text()
+        if not find:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Bulk replace", "Enter text to find.")
+            return
+        matches = self._preview_count_bulk_replace_matches()
+        if matches == 0:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Bulk replace", "No matches in filtered rows.")
+            return
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Bulk replace",
+            f"Replace {matches} target row(s) in the current filtered list?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        changed = self._preview_apply_bulk_replace()
+        QMessageBox.information(self, "Bulk replace", f"Updated {changed} row(s).")
+
+    def _preview_count_bulk_replace_matches(self) -> int:
+        find = self.preview_bulk_find_edit.text()
+        if not find:
+            return 0
+        case_sensitive = self.preview_bulk_case_check.isChecked()
+        needle = find if case_sensitive else find.lower()
+        count = 0
+        for idx in self._preview_filtered:
+            row = self._preview_rows[idx]
+            haystack = row.target if case_sensitive else row.target.lower()
+            if needle in haystack:
+                count += 1
+        return count
+
+    def _preview_apply_bulk_replace(self) -> int:
+        self._preview_save_current(update_tree=True)
+        find = self.preview_bulk_find_edit.text()
+        if not find:
+            return 0
+        replace = self.preview_bulk_replace_edit.text()
+        case_sensitive = self.preview_bulk_case_check.isChecked()
+        changed = 0
+        for idx in self._preview_filtered:
+            row = self._preview_rows[idx]
+            if case_sensitive:
+                new_target = row.target.replace(find, replace)
+            else:
+                new_target = _replace_case_insensitive(row.target, find, replace)
+            if new_target == row.target:
+                continue
+            row.target = new_target
+            row.manually_edited = True
+            row.compute_warnings()
+            self._preview_dirty = True
+            changed += 1
+            self._preview_update_tree_item(row)
+        if self._preview_current_idx is not None:
+            current = self._preview_rows[self._preview_current_idx]
+            self.preview_target_box.setPlainText(current.target)
+            self.preview_warning_label.setText("\n".join(current.warnings) if current.warnings else "")
+        self._preview_update_progress()
+        return changed
+
     # ------------------------------------------------------------------
     # Selection / editing
     # ------------------------------------------------------------------
@@ -603,6 +687,12 @@ class PreviewTabMixin:
         done = sum(1 for r in self._preview_rows if r.target.strip() and r.target != r.source)
         warns = sum(1 for r in self._preview_rows if r.warnings)
         self.preview_progress_label.setText(f"Translated: {done}/{total}  |  Warnings: {warns}")
+
+
+def _replace_case_insensitive(text: str, find: str, replace: str) -> str:
+    if not find:
+        return text
+    return re.sub(re.escape(find), lambda _match: replace, text, flags=re.IGNORECASE)
 
 
 def _truncate(s: str, n: int) -> str:
