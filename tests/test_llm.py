@@ -21,6 +21,8 @@ from game_llm_translator.llm import (
     _user_prompt,
     _fix_token_formatting,
     _build_system_prompt,
+    extract_namebox_names,
+    _replace_untranslated_namebox_names,
 )
 from game_llm_translator.models import TextEntry
 
@@ -602,3 +604,106 @@ def test_apply_correction_table_delete_term():
     from game_llm_translator.glossary import apply_correction_table
     rules = [("unwanted", "")]
     assert apply_correction_table("remove unwanted word", rules) == "remove  word"
+
+
+# ---------------------------------------------------------------------------
+# extract_namebox_names
+# ---------------------------------------------------------------------------
+
+def test_extract_namebox_names_simple():
+    """Extract CJK name from simple \\n<Name> pattern."""
+    entries = [TextEntry(Path("Map001.json"), "$[1].parameters[0]", "\\n<ディオン>「相変わらずだな」")]
+    names = extract_namebox_names(entries)
+    assert "ディオン" in names
+
+
+def test_extract_namebox_names_with_color_code():
+    """Extract visible name from \\n<\\C[0]長老> — strip control codes."""
+    entries = [TextEntry(Path("Map001.json"), "$[1].parameters[0]", "\\n<\\C[0]長老>「安心したまえ」")]
+    names = extract_namebox_names(entries)
+    assert "長老" in names
+
+
+def test_extract_namebox_names_dedup():
+    """Same name in multiple entries should appear only once."""
+    entries = [
+        TextEntry(Path("Map001.json"), "$[1].parameters[0]", "\\n<ディオン>line1"),
+        TextEntry(Path("Map001.json"), "$[2].parameters[0]", "\\n<ディオン>line2"),
+    ]
+    names = extract_namebox_names(entries)
+    assert len(names) == 1
+    assert "ディオン" in names
+
+
+def test_extract_namebox_names_skips_non_cjk():
+    """Non-CJK names like \\n<Alice> should not be extracted."""
+    entries = [TextEntry(Path("Map001.json"), "$[1].parameters[0]", "\\n<Alice>Hello")]
+    names = extract_namebox_names(entries)
+    assert names == {}
+
+
+def test_extract_namebox_names_no_namebox():
+    """Entries without namebox prefix should be skipped."""
+    entries = [TextEntry(Path("Map001.json"), "$[1].parameters[0]", "Just some dialogue")]
+    names = extract_namebox_names(entries)
+    assert names == {}
+
+
+# ---------------------------------------------------------------------------
+# _replace_untranslated_namebox_names
+# ---------------------------------------------------------------------------
+
+def test_replace_untranslated_namebox_simple():
+    """CJK name in namebox should be replaced with its translation."""
+    source = "\\n<ディオン>「相変わらずだな」"
+    target = "\\n<ディオン>「Vẫn giỏi như mọi khi」"
+    translations = {"ディオン": "Dion"}
+    result = _replace_untranslated_namebox_names(target, source, translations)
+    assert "Dion" in result
+    assert "ディオン" not in result.split("<")[1].split(">")[0]
+
+
+def test_replace_untranslated_namebox_with_color_code():
+    """CJK name with color code should be replaced while keeping color code."""
+    source = "\\n<\\C[0]長老>「安心したまえ」"
+    target = "\\n<\\C[0]長老>「Hãy yên tâm」"
+    translations = {"長老": "Trưởng lão"}
+    result = _replace_untranslated_namebox_names(target, source, translations)
+    assert "Trưởng lão" in result
+    assert "\\C[0]" in result
+    assert "長老" not in result.split("<")[1].split(">")[0]
+
+
+def test_replace_untranslated_namebox_already_translated():
+    """If name is already translated, don't change it."""
+    source = "\\n<ディオン>「相変わらずだな」"
+    target = "\\n<Dion>「Vẫn giỏi như mọi khi」"
+    translations = {"ディオン": "Dion"}
+    result = _replace_untranslated_namebox_names(target, source, translations)
+    assert result == target
+
+
+def test_replace_untranslated_namebox_no_namebox():
+    """If target has no namebox prefix, return unchanged."""
+    source = "\\n<ディオン>「相変わらずだな」"
+    target = "Vẫn giỏi như mọi khi"
+    translations = {"ディオン": "Dion"}
+    result = _replace_untranslated_namebox_names(target, source, translations)
+    assert result == target
+
+
+def test_replace_untranslated_namebox_no_translations():
+    """If translations dict is empty, return unchanged."""
+    source = "\\n<ディオン>「相変わらずだな」"
+    target = "\\n<ディオン>「Vẫn giỏi như mọi khi」"
+    result = _replace_untranslated_namebox_names(target, source, {})
+    assert result == target
+
+
+def test_replace_untranslated_namebox_face_prefix():
+    """Name with face+control-code prefix like \\F[N_01]\\n<希>."""
+    source = "\\F[N_01]\\n<希>こんにちは"
+    target = "\\F[N_01]\\n<希>Xin chào"
+    translations = {"希": "Hi"}
+    result = _replace_untranslated_namebox_names(target, source, translations)
+    assert "<Hi>" in result

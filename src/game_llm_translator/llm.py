@@ -72,6 +72,7 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
 _INNER_CTRL_RE = re.compile(
     r"(\\F[A-Za-z]*\[[^\]]*\]|\\OC\[\d+\]|\\OO\[\d+\]|\\FS\[\d+\]|\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^_\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
 )
+_CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힣]")
 # Matches non-namebox angle-bracket tags like <area>, <ItemImage:path>, <N_01>.
 # These are NOT YEP_MessageCore nameboxes — they are RPG Maker placeholders that
 # must stay fully opaque. A namebox is identified by having control codes (\\n, \\F, etc.)
@@ -133,6 +134,49 @@ _FIX_ANGLE_RE = re.compile(r'\\(\w+)\s*<\s*(.*?)\s*>')
 _FIX_PERCENT_RE = re.compile(r'%\s*(\d+)')
 _FIX_BACKSLASH_RE = re.compile(r'\\\s*([{}\$!><\^_\\])')
 _NAMEBOX_PREFIX_RE = re.compile(r'^((?:\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}\.$!><\^_\\]|\s)*)<((?:\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}\.$!><\^_\\]|[^<>]){1,80})>')
+
+
+def extract_namebox_names(entries: list[TextEntry]) -> dict[str, str]:
+    """Extract unique CJK namebox speaker names from entries.
+
+    Returns {visible_name: original_content} mapping.
+    visible_name = name with control codes stripped (the part to translate).
+    original_content = full content inside <...> including control codes.
+    """
+    names: dict[str, str] = {}
+    for entry in entries:
+        match = _NAMEBOX_PREFIX_RE.match(entry.source)
+        if not match:
+            continue
+        name_content = match.group(2)
+        visible_name = _INNER_CTRL_RE.sub("", name_content).strip()
+        if visible_name and _CJK_RE.search(visible_name) and visible_name not in names:
+            names[visible_name] = name_content
+    return names
+
+
+def _replace_untranslated_namebox_names(target: str, source: str, name_translations: dict[str, str]) -> str:
+    """If the namebox name in target is still CJK/untranslated, replace with translation."""
+    src_match = _NAMEBOX_PREFIX_RE.match(source)
+    if not src_match or not name_translations:
+        return target
+    src_visible = _INNER_CTRL_RE.sub("", src_match.group(2)).strip()
+    translation = name_translations.get(src_visible)
+    if not translation:
+        return target
+
+    tgt_match = _NAMEBOX_PREFIX_RE.match(target)
+    if not tgt_match:
+        return target
+    tgt_visible = _INNER_CTRL_RE.sub("", tgt_match.group(2)).strip()
+
+    # If target name is still the untranslated CJK, replace only the visible name
+    if tgt_visible == src_visible and _CJK_RE.search(tgt_visible):
+        tgt_name_content = tgt_match.group(2)
+        new_name_content = tgt_name_content.replace(tgt_visible, translation)
+        return tgt_match.group(1) + "<" + new_name_content + ">" + target[tgt_match.end():]
+
+    return target
 
 
 def _restore_namebox_prefix(source: str, target: str) -> str:
@@ -577,6 +621,51 @@ def _build_system_prompt(target_lang: str | None, glossary_block: str = "") -> s
 
 
 SYSTEM_PROMPT = SYSTEM_PROMPT_BASE  # kept for backward compat with tests
+
+
+_NAME_TRANSLATE_SYSTEM = """You translate speaker names from a game. Translate each name to {target_lang} naturally.
+- For kanji/hanzi names: use the established reading for the target language.
+- For katakana names: transliterate to the target language script (e.g. ディオン → Dion for English, ディオン → Dion for Vietnamese).
+- For names already in the target script: keep unchanged.
+Return ONLY a JSON object mapping each original name to its translation. No explanation, no markdown fences."""
+
+
+def translate_namebox_names(
+    provider: LLMProvider,
+    names: dict[str, str],
+    target_lang: str,
+    source_lang: str | None = None,
+) -> dict[str, str]:
+    """Translate namebox speaker names using a lightweight LLM call.
+
+    Args:
+        provider: LLM provider to use for translation.
+        names: {visible_name: original_content} from extract_namebox_names.
+        target_lang: Target language name/code.
+        source_lang: Source language (auto-detected if None).
+    Returns:
+        {visible_name: translated_name} mapping. Empty dict on failure.
+    """
+    if not names:
+        return {}
+    name_list = list(names.keys())
+    system_prompt = _NAME_TRANSLATE_SYSTEM.format(target_lang=target_lang)
+    user_prompt = json.dumps(name_list, ensure_ascii=False)
+    # Build lightweight TextEntry objects to use the provider's translate_batch
+    from .models import TextEntry as _TE
+    fake_entries = [_TE(Path("names"), str(i), n, "speaker name") for i, n in enumerate(name_list)]
+    try:
+        results = provider.translate_batch(fake_entries, target_lang, source_lang)
+        translations: dict[str, str] = {}
+        for r in results:
+            translated = r.target.strip()
+            if translated and translated != r.source and r.key.isdigit():
+                idx = int(r.key)
+                if idx < len(name_list):
+                    translations[name_list[idx]] = translated
+        return translations
+    except Exception:
+        return {}
 
 
 _CONTEXT_HINTS: dict[str, str] = {

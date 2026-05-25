@@ -10,7 +10,7 @@ from pathlib import Path
 from .app_logging import log_event
 from .csv_store import load_results, save_results
 from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories, speaker_name_glossary_from_results
-from .llm import LLMProvider, make_provider, postprocess_translation
+from .llm import LLMProvider, _replace_untranslated_namebox_names, extract_namebox_names, make_provider, postprocess_translation, translate_namebox_names
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
 from .validate import check_noun_consistency, format_noun_warnings, translation_warnings
@@ -39,6 +39,7 @@ class TranslateOptions:
     on_log: LogFn | None = None
     stop_event: threading.Event | None = None
     on_batch_results: Callable[[list[TranslationResult]], None] | None = None
+    name_translations: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -355,6 +356,32 @@ def run_translate(
                     auto_entries = speaker_entries + [entry for entry in auto_entries if entry[0] not in speaker_terms]
                 if auto_entries:
                     batch_glossary = format_glossary_for_prompt(auto_entries, max_chars=2000)
+
+        # Pre-translate CJK namebox speaker names
+        batch_name_translations = dict(options.name_translations or {})
+        namebox_names = extract_namebox_names(batch)
+        if namebox_names:
+            # Only translate names not already in name_translations
+            untranslated = {n: c for n, c in namebox_names.items() if n not in batch_name_translations}
+            if untranslated:
+                batch_provider_tmp = provider if provider is not None else _make_provider(options, batch_glossary)
+                try:
+                    new_translations = translate_namebox_names(
+                        batch_provider_tmp, untranslated, options.target_lang, options.source_lang
+                    )
+                    if new_translations:
+                        batch_name_translations.update(new_translations)
+                        names_str = ", ".join(f"{k}→{v}" for k, v in new_translations.items())
+                        _log(options, f"Namebox names: {names_str}")
+                except Exception as exc:
+                    _log(options, f"WARN: namebox name translation failed: {exc}")
+            # Inject name translations into glossary
+            if batch_name_translations:
+                name_gloss_lines = [f'- "{n}" -> "{t}"\n' for n, t in batch_name_translations.items() if n in namebox_names]
+                if name_gloss_lines:
+                    name_glossary = "## Speaker Name Translations (apply inside <...> namebox brackets)\n" + "".join(name_gloss_lines)
+                    batch_glossary = (batch_glossary + "\n" + name_glossary) if batch_glossary else name_glossary
+
         batch_provider = provider if provider is not None else _make_provider(options, batch_glossary)
         try:
             batch_results = translate_batch_with_retry(batch_provider, batch, options.target_lang, options.source_lang, options, report, report_lock)
@@ -398,6 +425,16 @@ def run_translate(
         else:
             expanded = [
                 TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, r.target), r.context, sub_keys=r.sub_keys)
+                for r in expanded
+            ]
+        # Post-process: replace any CJK namebox names the LLM left untranslated
+        if batch_name_translations:
+            expanded = [
+                TranslationResult(
+                    r.file, r.key, r.source,
+                    _replace_untranslated_namebox_names(r.target, r.source, batch_name_translations),
+                    r.context, sub_keys=r.sub_keys,
+                )
                 for r in expanded
             ]
         for item in expanded:
