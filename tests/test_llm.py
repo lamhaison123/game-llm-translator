@@ -760,3 +760,27 @@ def test_parse_name_json_empty_translation_skipped():
     text = '{"ディオン": "  "}'
     result = _parse_name_json(text, names)
     assert result == {}
+
+
+def test_parse_name_json_identity_translation_skipped():
+    """Identity translations (same name in and out) are skipped, matching MTL branch behavior."""
+    names = {"ディオン": "ディオン"}
+    text = '{"ディオン": "ディオン"}'
+    result = _parse_name_json(text, names)
+    assert result == {}
+
+
+def test_parse_name_json_code_fence_with_space():
+    """LLM wraps JSON in code fence with space before language tag: ``` json."""
+    names = {"ディオン": "ディオン"}
+    text = '``` json\n{"ディオン": "Dion"}\n```'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion"}
+
+
+def test_parse_name_json_code_fence_uppercase():
+    """LLM wraps JSON in code fence with uppercase JSON tag: ```JSON."""
+    names = {"ディオン": "ディオン"}
+    text = '```JSON\n{"ディオン": "Dion"}\n```'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion"}

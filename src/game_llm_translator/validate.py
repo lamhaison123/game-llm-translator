@@ -5,7 +5,7 @@ import re
 from .llm import _INNER_CTRL_RE, _NON_NAMEBOX_TAG_RE, _NAMEBOX_PREFIX_RE
 from .models import TranslationResult
 
-_CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힣]")
+_CJK_RE = re.compile(r"[㐀-䶟一-鿿぀-ヿ가-힣]")
 
 _PLACEHOLDER_RE = re.compile(
     _INNER_CTRL_RE.pattern + "|(?:<[^<>]{1,120}>)"

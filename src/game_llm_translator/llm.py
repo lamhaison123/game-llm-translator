@@ -72,7 +72,7 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
 _INNER_CTRL_RE = re.compile(
     r"(\\F[A-Za-z]*\[[^\]]*\]|\\OC\[\d+\]|\\OO\[\d+\]|\\FS\[\d+\]|\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^_\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
 )
-_CJK_RE = re.compile(r"[一-鿿぀-ヿ가-힣]")
+_CJK_RE = re.compile(r"[㐀-䶟一-鿿぀-ヿ가-힣]")
 # Matches non-namebox angle-bracket tags like <area>, <ItemImage:path>, <N_01>.
 # These are NOT YEP_MessageCore nameboxes — they are RPG Maker placeholders that
 # must stay fully opaque. A namebox is identified by having control codes (\\n, \\F, etc.)
@@ -295,6 +295,7 @@ Some RPG Maker MV/MZ games use the Yanfly MessageCore plugin to display speaker 
 14. For System.json array entries (armorTypes, elements, equipTypes, skillTypes, weaponTypes): these are short UI labels in menus. Translate them with standard RPG terminology, keeping each entry concise. Some MZ games have per-character equipment types (e.g. "アキナ専用" = "Akina-only") — translate the descriptive word but keep character names consistent with speaker names.
 15. For plugin UI text (context "plugin UI text"): these are short labels from custom plugin overlays like phone-menu apps, galleries, or shop UIs. Keep translations very short (2-4 words ideal). Format strings like %1, %2 in plugin UI are runtime substitution markers, not RPG Maker control codes — preserve them exactly.
 16. For already-partially-translated games: when a source string mixes CJK characters with target-language text (e.g. Japanese + Vietnamese), the target-language portion is likely an existing partial translation. Keep existing target-language text consistent; only translate the remaining CJK portions. Do NOT re-translate already-translated segments.
+17. Corner brackets 【…】 (lenticular brackets) in Japanese text are emphasis/title markers — they wrap chapter names, scene titles, skill names, or important terms. Always translate the text INSIDE 【…】 into the target language, keeping the 【…】 brackets themselves. Example: 【踊り子ーその２】を回想しますか？ → 【Vũ công — Phần 2】Bạn có muốn hồi tưởng không? (NOT 【踊り子ーその２】を回想しますか？). The content inside 【…】 is regular game text (titles, labels, terms), NOT proper nouns that must stay untranslated.
 
 ## Context usage
 - The "context" field describes the type of text. Common values:
@@ -343,7 +344,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Keep RPG terms consistent throughout the batch (e.g. always use the same word for "skill"→"kỹ năng", "item"→"vật phẩm", "quest"→"nhiệm vụ").
 - Honorifics and address forms should match the character's personality and social role.
 - For battle messages with %1/%2: keep the format, e.g. "%1 sử dụng %2".
-- CJK full-width punctuation → Vietnamese equivalents: ：→:, 。→., 、→,, 「」→"", 〜→~.
+- CJK full-width punctuation → Vietnamese equivalents: ：→:, 。→., 、→,, 「」→"", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [] in the target. Example: 【踊り子ーその２】 → [Vũ công — Phần 2].
 - For speaker names: keep CJK proper nouns as-is or use Vietnamese readings. If a character has a name in both CJK and alphabetic form, prefer the alphabetic form. When mixing CJK names with Vietnamese address forms, keep the name intact and add the Vietnamese address word before it (e.g. "anh 健太" or "Akina-kun" → "Akina").
 - For state names/descriptions: keep them concise and use Vietnamese RPG terminology (độc, choáng, chết, v.v.).
 - For System.json battle messages: %1 is the battler name, %2 is the skill/name. Use natural Vietnamese: "%1 nhận %2 sát thương!" not word-for-word order from Japanese.
@@ -363,7 +365,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Preserve sentence-final particles and speech patterns that define character personality (だ/である/だわ/の/わ/ぜ/ぞ/かしら/なの etc.).
 - Keep katakana loanwords for modern/foreign concepts; use kanji/kana for traditional RPG terms.
 - Japanese onomatopoeia/mimetic words (ドキドキ, ワー, うぅ…, ふふっ): keep them in natural Japanese — do NOT translate to another language.
-- CJK full-width punctuation: preserve as-is (：。、「」、〜).
+- CJK full-width punctuation: preserve as-is (：。、「」、〜), but convert 【】 to [] since corner brackets are Japanese-specific emphasis markers.
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For item/skill descriptions: keep concise; maintain existing \\i[N] icon token positions.
 - For battle messages with %1/%2: keep the format, e.g. "%1は%2を使った！"
 - For choices: keep them short since they appear in choice windows.
@@ -374,7 +377,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Use Simplified Chinese unless the context clearly calls for Traditional (e.g. Taiwan/Hong Kong game).
 - Keep RPG terminology consistent throughout the batch: 技能→skill, 物品→item, 任务→quest, 装备→equipment, 魔法→magic.
 - Match formality level to the character's role and the scene's tone.
-- Preserve CJK punctuation style (：。、「」、～) consistent with Chinese conventions.
+- Preserve CJK punctuation style (：。、「」、～, 【】→【】keeping as-is for CJK target) consistent with Chinese conventions.
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — for CJK-to-CJK translation, keep 【】 as-is since they are native punctuation; for CJK-to-non-CJK, convert 【】 to [].
 - For character dialogue: distinguish register by social role — formal characters use 您/阁下, casual characters use 你/咱.
 - Japanese honorific suffixes → Chinese equivalents: -さん→先生/女士 (or omit), -くん→同学/小+surname, -ちゃん→小+name, -先生→老师, -様→大人.
 - Chinese onomatopoeia for Japanese mimetic words: ドキドキ→扑通扑通, ワー→哇, うぅ…→呜…, ふふっ→呵呵.
@@ -394,7 +398,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Japanese honorific suffixes → Korean equivalents: -さん→씨/님, -くん→군, -ちゃん→양, -先生→선생님, -様→님.
 - Korean onomatopoeia for Japanese mimetic words: ドキドキ→두근두근, ワー→와아, うぅ…→으음…, ふふっ→후후.
 - For battle messages with %1/%2: keep format, e.g. "%1이(가) %2을(를) 사용했다!"
-- CJK punctuation → Korean: ：→:, 。→., 、→,, 「」→"", 〜→~.
+- CJK punctuation → Korean: ：→:, 。→., 、→,, 「」→"", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: Japanese CJK names → Korean Hanja readings when available (健太→겐타), otherwise transliterate katakana names via Korean phonology.
 - For state names: use standard Korean RPG terminology (전투불능, 독, 수면, 마비, etc.).
 - For choices: keep them short and concise.
@@ -411,7 +416,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • -様: "Lord"/"Lady" or "Sir"/"Madam"
 - Japanese onomatopoeia → English: ドキドキ→thump-thump/pounding heart, ワー→whoa/wow, うぅ…→ugh…, ふふっ→heh/hehe.
 - For battle messages with %1/%2: keep format, e.g. "%1 used %2!" or "%1 takes %2 damage!"
-- CJK punctuation → English: ：→:, 。→., 、→,, 「」→"", 〜→~.
+- CJK punctuation → English: ：→:, 。→., 、→,, 「」→"", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For state names: use standard English RPG terminology (KO/Death, Poison, Sleep, Paralysis, Silence, etc.).
 - For speaker names: transliterate CJK names to romaji (Hepburn for Japanese, Pinyin for Chinese). Keep fantasy names as-is.
 - For choices: keep them short and punchy. 1-3 words ideal.
@@ -428,7 +434,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Royal/very formal: ข้าพระพุทธเจ้า/กระผม
 - Japanese honorific suffixes → Thai: -さん→คุณ, -くん→น้อง, -ちゃん→น้อง/หนู, -先生=>อาจารย์/ครู, -様→ท่าน.
 - For battle messages with %1/%2: keep format, e.g. "%1 ใช้ %2"
-- CJK punctuation → Thai: ：→:, 。→., 、→,, 「」→"", 〜→~
+- CJK punctuation → Thai: ：→:, 。→., 、→,, 「」→"", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names to Thai phonology when natural (e.g. サクラ→ซากุระ). Keep English/alphanumeric names as-is.
 - For state names: use Thai RPG terminology (ตาย/KO, พิษ, หลับ, เกลือก, ใบ้, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -445,7 +452,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Intimate/romantic: aku-kamu
 - Japanese honorific suffixes → Indonesian: -さん→Bapak/Ibu/Kak (by age), -くん→Kak/Adik, -ちゃん→Adik/engkau, -先生→Guru/Prof, -様→Tuan/Nyonya.
 - For battle messages with %1/%2: keep format, e.g. "%1 menggunakan %2!"
-- CJK punctuation → Indonesian: ：→:, 。→., 、→,, 「」→"", 〜→~.
+- CJK punctuation → Indonesian: ：→:, 。→., 、→,, 「」→"", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names to Indonesian phonology naturally (e.g. サクラ→Sakura). Keep established romaji as-is.
 - For state names: use Indonesian RPG terminology (KO/Mati, Racun, Tidur, Lumpuh, Bisu, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -461,7 +469,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Intimate/romantic: eu-você/meu bem
 - Japanese honorific suffixes → Portuguese: -さん→Sr./Sra./Seu/Dona (by context), -くん→omit or "menino", -ちゃん→diminutive, -先生→Mestre/Professor, -様→Senhor/Senhora.
 - For battle messages with %1/%2: keep format, e.g. "%1 usou %2!" or "%1 sofreu %2 de dano!"
-- CJK punctuation → Portuguese: ：→:, 。→., 、→,, 「」→"", 〜→~.
+- CJK punctuation → Portuguese: ：→:, 。→., 、→,, 「」→"", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate CJK names naturally. Japanese → Hepburn romaji as-is. Chinese → Pinyin.
 - For state names: use Portuguese RPG terminology (KO/Morto, Veneno, Sono, Paralisia, Silêncio, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -478,7 +487,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Superior/teacher: я-Вы/Вам
 - Japanese honorific suffixes → Russian: -さん→-сан (keep) or господин/госпожа, -くん→-кун (keep), -ちゃん→-тян (keep), -先生→сэнсэй, -様→-сама/господин.
 - For battle messages with %1/%2: keep format, e.g. "%1 использует %2!" — ensure Russian case agreement.
-- CJK punctuation → Russian: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~.
+- CJK punctuation → Russian: ：→:, 。→., 、→,, 「»→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese via Polivanov system (タカシ→Такаси), Chinese via Palladius (健太→Цзяньтай).
 - For state names: use Russian RPG terminology (Гибель/KO, Яд, Сон, Паралич, Молчание, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -495,7 +505,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Royal/very formal: je-Vous/votre majesté
 - Japanese honorific suffixes → French: -さん→Monsieur/Madame, -くん→omit or prénom, -ちゃん→diminutif, -先生→Maître/Professeur, -様→Seigneur/Dame.
 - For battle messages with %1/%2: keep format, e.g. "%1 utilise %2 !" (note: French typography puts space before !).
-- CJK punctuation → French: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~.
+- CJK punctuation → French: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names via Hepburn romaji as-is. Chinese → Pinyin.
 - For state names: use French RPG terminology (KO/Mort, Poison, Sommeil, Paralysie, Silence, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -513,7 +524,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Elderly/respected: ich-Sie
 - Japanese honorific suffixes → German: -さん→Herr/Frau, -くん→omit or Vorname, -ちゃん→Kosename/Diminutiv, -先生→Meister/Professor, -様→Herr/Frau/Gnädige.
 - For battle messages with %1/%2: keep format, e.g. "%1 benutzt %2!" or "%1 erleidet %2 Schaden!"
-- CJK punctuation → German: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~.
+- CJK punctuation → German: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names via Hepburn romaji. Chinese → Pinyin.
 - For state names: use German RPG terminology (KO/Tod, Gift, Schlaf, Lähmung, Stille, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -531,7 +543,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Very formal: yo-su merced/su señoría
 - Japanese honorific suffixes → Spanish: -さん→Señor/Señora, -くん→chico/omit, -ちゃん→diminutivo, -先生→Maestro/Profesor, -様→Señor/Señora/Dama.
 - For battle messages with %1/%2: keep format, e.g. "¡%1 usó %2!" or "¡%1 recibe %2 de daño!"
-- CJK punctuation → Spanish: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~.
+- CJK punctuation → Spanish: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names via Hepburn romaji. Chinese → Pinyin.
 - For state names: use Spanish RPG terminology (KO/Muerto, Veneno, Sueño, Parálisis, Silencio, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -549,7 +562,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Elderly/respected: io-Lei/Voi (southern Italy)
 - Japanese honorific suffixes → Italian: -さん→Signor/Signora, -くん→omit or nome, -ちゃん→vezzeggiativo, -先生→Maestro/Professore, -様→Signore/Signora/Dama.
 - For battle messages with %1/%2: keep format, e.g. "%1 usa %2!" or "%1 subisce %2 danni!"
-- CJK punctuation → Italian: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~.
+- CJK punctuation → Italian: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names via Hepburn romaji. Chinese → Pinyin.
 - For state names: use Italian RPG terminology (KO/Morto, Veleno, Sonno, Paralisi, Silenzio, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -566,7 +580,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Superior/teacher: ja-Pan/Pani
 - Japanese honorific suffixes → Polish: -さん→Pan/Pani, -くん→pominięte lub imię, -ちゃん→zdrobnienie, -先生→Mistrz/Profesor, -様→Pan/Pani/Wielmożny.
 - For battle messages with %1/%2: keep format, e.g. "%1 używa %2!" — ensure Polish case agreement.
-- CJK punctuation → Polish: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~.
+- CJK punctuation → Polish: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names via Hepburn romaji. Chinese → Pinyin.
 - For state names: use Polish RPG terminology (Śmierć/KO, Trucizna, Sen, Paraliż, Milczenie, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -583,7 +598,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Very formal: ben-siz/Siz
 - Japanese honorific suffixes → Turkish: -さん→Bey/Hanım, -くん→omit veya ad, -ちゃん→küçük + ad, -先生→Usta/Hoca, -様→Bey/Hanım/Efendi.
 - For battle messages with %1/%2: keep format, e.g. "%1 %2 kullandı!" — Turkish SOV word order.
-- CJK punctuation → Turkish: ：→:, 。→., 、→,, 「」→""/«»", 〜→~.
+- CJK punctuation → Turkish: ：→:, 。→., 、→,, 「」→""/«»", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names naturally (サクラ→Sakura). Keep romaji as-is.
 - For state names: use Turkish RPG terminology (KO/Ölü, Zehir, Uyku, Felç, Sessizlik, etc.).
 - For choices: keep them short and clear. 2-4 words ideal.
@@ -601,7 +617,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Very formal: أنا-حضرتك/سعادتك
 - Japanese honorific suffixes → Arabic: -さん→السيد/السيدة, -くん→فتى/محذوف, -ちゃん→تصغير, -先生→أستاذ/معلم, -様→سيدي/سيدتي.
 - For battle messages with %1/%2: keep format, e.g. "استخدم %1 %2!" — ensure RTL/LTR mixing is handled correctly.
-- CJK punctuation → Arabic: ：→:, 。→., 、→,, 「」→""/«»", 〜→~.
+- CJK punctuation → Arabic: ：→:, 。→., 、→,, 「」→""/«»", 〜→~, 【】→[] (corner brackets become square brackets).
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names to Arabic script (サクラ→ساكورا). Chinese → Pinyin in Arabic script.
 - For state names: use Arabic RPG terminology (وفاة/KO, سم, نوم, شلل, صمت, etc.).
 - For choices: keep them short and clear. 2-4 words ideal. Place after RTL marker if needed.
@@ -634,7 +651,7 @@ def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
     """Parse LLM response for name translation. Accepts both JSON object and JSON array of items."""
     text = text.strip()
     if text.startswith("```"):
-        text = text.strip("`").removeprefix("json").strip()
+        text = text.strip("`").lstrip().removeprefix("json").removeprefix("JSON").strip()
     text = _repair_mojibake(text)
     try:
         data = json.loads(text)
@@ -646,7 +663,7 @@ def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
     translations: dict[str, str] = {}
     if isinstance(data, dict):
         for original, translated in data.items():
-            if original in names and isinstance(translated, str) and translated.strip():
+            if original in names and isinstance(translated, str) and translated.strip() and translated.strip() != original:
                 translations[original] = translated.strip()
     elif isinstance(data, list):
         # Fallback: LLM returned array of dicts like [{"original": "ディオン", "translation": "Dion"}]
@@ -654,7 +671,7 @@ def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
             if isinstance(item, dict):
                 original = item.get("original") or item.get("source") or item.get("name")
                 translated = item.get("translation") or item.get("target")
-                if isinstance(original, str) and isinstance(translated, str) and original in names:
+                if isinstance(original, str) and isinstance(translated, str) and original in names and translated.strip() != original:
                     translations[original] = translated.strip()
     return translations
 
@@ -688,6 +705,8 @@ def translate_namebox_names(
                 translated = translated.strip()
                 if translated and translated != name:
                     translations[name] = translated
+            except RuntimeError:
+                raise
             except Exception:
                 pass
         return translations
@@ -698,11 +717,13 @@ def translate_namebox_names(
         if isinstance(provider, AnthropicProvider):
             message = provider.client.messages.create(
                 model=provider.model,
-                max_tokens=min(1024, max(256, len(name_list) * 64)),
+                max_tokens=min(2048, max(256, len(name_list) * 64)),
                 system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_prompt}],
             )
             text = _anthropic_message_text(message)
+            if getattr(message, "stop_reason", None) == "max_tokens":
+                raise ValueError("Name translation response truncated (max_tokens)")
         elif isinstance(provider, OpenAIProvider):
             response = provider.client.chat.completions.create(
                 model=provider.model,
@@ -713,6 +734,12 @@ def translate_namebox_names(
                 ],
             )
             text = _chat_completion_text(response)
+            choices = getattr(response, "choices", None) or []
+            if choices:
+                choice = choices[0]
+                finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+                if finish == "length":
+                    raise ValueError("Name translation response truncated (finish_reason=length)")
         else:
             # Unknown provider type — fall back to translate_batch (less ideal but functional)
             from .models import TextEntry as _TE
