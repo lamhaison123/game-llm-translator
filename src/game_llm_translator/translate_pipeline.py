@@ -88,6 +88,33 @@ def dedupe_results(results: list[TranslationResult], wanted_ids: set[tuple[str, 
     return list(by_id.values())
 
 
+def _load_namebox_map(path: Path) -> dict[str, str]:
+    """Load persisted speaker-name translations. Returns empty dict on any error
+    so a corrupted file does not block a translation run."""
+    import csv as _csv
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as fp:
+            return {row["original"]: row["translation"]
+                    for row in _csv.DictReader(fp)
+                    if row.get("original") and row.get("translation")}
+    except (OSError, _csv.Error, KeyError, UnicodeDecodeError):
+        return {}
+
+
+def _save_namebox_map(path: Path, mapping: dict[str, str]) -> None:
+    """Atomically write the namebox map; safe to call from any thread."""
+    import csv as _csv
+    from .csv_store import _atomic_write_text
+
+    def _write(fp):
+        writer = _csv.DictWriter(fp, fieldnames=["original", "translation"])
+        writer.writeheader()
+        for original, translation in sorted(mapping.items()):
+            writer.writerow({"original": original, "translation": translation})
+
+    _atomic_write_text(path, _write)
+
+
 def estimate_batch_size(entries: list[TextEntry], target_tokens: int = 8000) -> int:
     if not entries:
         return 30
@@ -191,6 +218,20 @@ def is_retryable(exc: Exception) -> tuple[bool, float]:
     return False, 0.0
 
 
+_SPLIT_ERROR_MARKERS = ("524", "truncated", "max_tokens", "not valid json", "expecting value", "finish_reason=length")
+
+
+def _should_split_on_error(exc: Exception) -> bool:
+    """Errors where splitting the batch is more productive than retrying full.
+
+    524 timeouts are server-side load; max_tokens/truncated are usually caused
+    by one long entry — splitting isolates it. Same for JSON parse errors that
+    repeat across retries (often a single problematic entry corrupting output).
+    """
+    msg = str(exc).lower()
+    return any(marker.lower() in msg for marker in _SPLIT_ERROR_MARKERS)
+
+
 def translate_batch_with_retry(
     provider: LLMProvider,
     batch: list[TextEntry],
@@ -221,9 +262,9 @@ def translate_batch_with_retry(
                 while time.monotonic() < end:
                     _raise_if_stopped(options)
                     time.sleep(0.5)
-                if "524" in str(exc) and len(batch) > 1 and _depth < 6:
+                if _should_split_on_error(exc) and len(batch) > 1 and _depth < 6:
                     mid = len(batch) // 2
-                    _log(options, f"524 timeout: splitting batch {len(batch)} -> {mid}+{len(batch)-mid} to reduce server load")
+                    _log(options, f"Splitting batch {len(batch)} -> {mid}+{len(batch)-mid} (cause: {str(exc)[:60]})")
                     left = translate_batch_with_retry(provider, batch[:mid], target_lang, source_lang, options, report, report_lock, _depth + 1)
                     right = translate_batch_with_retry(provider, batch[mid:], target_lang, source_lang, options, report, report_lock, _depth + 1)
                     return left + right
@@ -339,8 +380,50 @@ def run_translate(
     name_translations_in_flight: set[str] = set()
     translated_count = len(results)
     failed_batches: list[list[TextEntry]] = []
-    # Shared across batches for consistent namebox name translations
+    # Shared across batches for consistent namebox name translations.
+    # Persisted to disk so resume runs (and re-translate of unrelated batches)
+    # don't re-spend tokens on names that were already translated previously.
+    namebox_csv = translations_csv.parent / (translations_csv.stem + ".namebox.csv")
     name_translations_map = dict(options.name_translations or {})
+    if not options.restart and namebox_csv.exists():
+        loaded = _load_namebox_map(namebox_csv)
+        if loaded:
+            # Existing constructor entries win (e.g. an explicit override from caller).
+            for k, v in loaded.items():
+                name_translations_map.setdefault(k, v)
+            _log(options, f"Loaded {len(loaded)} namebox names from {namebox_csv.name}")
+
+    # Pre-pass: extract ALL unique CJK namebox names from the entire workload and
+    # translate them in a single LLM call before the main loop. This cuts N extra
+    # round-trips (one per batch with new names) down to 1, and ensures every
+    # worker sees the full name map from the first batch onwards.
+    all_namebox_names: dict[str, str] = {}
+    for batch in batches:
+        for name, content in extract_namebox_names(batch).items():
+            if name not in all_namebox_names and name not in name_translations_map:
+                all_namebox_names[name] = content
+    if all_namebox_names:
+        try:
+            prepass_provider = provider if provider is not None else _make_provider(options, glossary_block)
+            new_translations = translate_namebox_names(
+                prepass_provider, all_namebox_names, options.target_lang, options.source_lang
+            )
+            if new_translations:
+                name_translations_map.update(new_translations)
+                names_str = ", ".join(f"{k}→{v}" for k, v in new_translations.items())
+                _log(options, f"Pre-translated {len(new_translations)} namebox names: {names_str}")
+                try:
+                    _save_namebox_map(namebox_csv, name_translations_map)
+                except Exception as exc:
+                    _log(options, f"WARN: could not persist namebox map: {exc}")
+        except RuntimeError as exc:
+            # Only propagate the Stop signal; other RuntimeErrors are treated as
+            # WARN and the pipeline falls back to per-batch translation.
+            if _is_stopped_error(exc):
+                raise
+            _log(options, f"WARN: namebox pre-pass failed (will fall back to per-batch): {exc}")
+        except Exception as exc:
+            _log(options, f"WARN: namebox pre-pass failed (will fall back to per-batch): {exc}")
 
     def _fanout_entry(e: TextEntry) -> list[TextEntry]:
         if options.dedupe_by_source:
@@ -684,4 +767,9 @@ def run_translate(
     report.translated = sum(1 for r in results if r.target.strip() and r.target != r.source)
     report.fallback = len(entries) - report.translated
     _log(options, f"--- Report: {report.translated}/{len(entries)} translated, {report.fallback} fallback, {report.reused_memory} memory ---")
+    if name_translations_map:
+        try:
+            _save_namebox_map(namebox_csv, name_translations_map)
+        except Exception as exc:
+            _log(options, f"WARN: could not persist namebox map: {exc}")
     return results, report

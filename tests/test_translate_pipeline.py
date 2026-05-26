@@ -425,13 +425,16 @@ def test_run_translate_parallel_mixed_failure_recovers_and_counts_failed_batches
 
 
 def test_namebox_translation_dedups_concurrent_workers(tmp_path):
-    """Two workers processing batches that share a CJK namebox speaker must result
-    in exactly one underlying translate_namebox_names call for that shared name.
+    """Shared CJK speaker name across batches results in exactly one underlying
+    translate_namebox_names call.
 
-    Regression for the TOCTOU race on name_translations_map: previously both
-    workers could snapshot an empty map, both see the name as untranslated, and
-    both call the LLM independently. The fix marks names as in-flight under the
-    coordination lock so the second worker waits instead of duplicating work.
+    Two mechanisms cooperate to achieve this:
+    (a) The pre-pass at the top of run_translate translates all unique CJK names
+        in a single call before workers start. This handles the common case.
+    (b) When the pre-pass fails (provider error, RuntimeError), the per-batch
+        path uses a Condition + in_flight set so concurrent workers do not
+        duplicate calls for the same name. The TOCTOU race that previously
+        allowed two workers to both claim the same untranslated name is closed.
     """
     entries = [
         TextEntry(Path("a.json"), "$.k0", "\\n<健太>「あ」"),
@@ -443,29 +446,13 @@ def test_namebox_translation_dedups_concurrent_workers(tmp_path):
 
     import game_llm_translator.translate_pipeline as tp
 
-    # Barrier the EXTRACT step — forces both worker threads into the namebox-claim
-    # phase simultaneously. Without this the OS scheduler may serialize them and
-    # the race window never opens.
-    start_barrier = threading.Barrier(2)
     name_call_count = 0
     name_call_lock = threading.Lock()
-    original_extract = tp.extract_namebox_names
-
-    def synced_extract(batch):
-        result = original_extract(batch)
-        if result:
-            # Only block when there are namebox names to translate; otherwise this
-            # barrier would deadlock single-batch paths in other tests.
-            start_barrier.wait(timeout=2.0)
-        return result
 
     def fake_translate_namebox_names(_provider, names, _target, _source):
         nonlocal name_call_count
         with name_call_lock:
             name_call_count += 1
-        # Hold the in-flight slot long enough for the other worker to enter
-        # the claim phase, observe the in-flight name, and wait on the Condition.
-        time.sleep(0.05)
         return {n: f"Kenta_{i}" for i, n in enumerate(names.keys())}
 
     options = TranslateOptions(
@@ -486,14 +473,161 @@ def test_namebox_translation_dedups_concurrent_workers(tmp_path):
 
     tp._make_provider = factory
     tp.translate_namebox_names = fake_translate_namebox_names
-    tp.extract_namebox_names = synced_extract
     try:
         results, report = run_translate(entries, out, options)
     finally:
         tp._make_provider = original_make
         tp.translate_namebox_names = original_translate
-        tp.extract_namebox_names = original_extract
 
     assert len(results) == 4
-    # The shared CJK name 健太 should be translated exactly once, not once per batch.
+    # The shared CJK name 健太 should be translated exactly once across the run.
+    # With the pre-pass, this means 1 call before workers start; without it
+    # (e.g. pre-pass failure), the in_flight coordination still caps it at 1.
     assert name_call_count == 1, f"Expected 1 namebox-translation call, got {name_call_count}"
+
+
+def test_namebox_per_batch_path_dedups_concurrent_workers_when_prepass_fails(tmp_path):
+    """Even when the pre-pass cannot run (raises), the per-batch claim path must
+    still dedup concurrent workers via the in_flight set + Condition.
+    """
+    entries = [
+        TextEntry(Path("a.json"), "$.k0", "\\n<健太>「あ」"),
+        TextEntry(Path("a.json"), "$.k1", "\\n<健太>「い」"),
+        TextEntry(Path("a.json"), "$.k2", "\\n<健太>「う」"),
+        TextEntry(Path("a.json"), "$.k3", "\\n<健太>「え」"),
+    ]
+    out = tmp_path / "translations.csv"
+
+    import game_llm_translator.translate_pipeline as tp
+
+    call_count_lock = threading.Lock()
+    state = {"prepass_done": False, "post_prepass_calls": 0}
+    start_barrier = threading.Barrier(2)
+    original_extract = tp.extract_namebox_names
+
+    def synced_extract(batch):
+        result = original_extract(batch)
+        if state["prepass_done"] and result:
+            try:
+                start_barrier.wait(timeout=2.0)
+            except threading.BrokenBarrierError:
+                pass
+        return result
+
+    def fake_translate_namebox_names(_provider, names, _target, _source):
+        if not state["prepass_done"]:
+            state["prepass_done"] = True
+            raise RuntimeError("simulated pre-pass failure")
+        with call_count_lock:
+            state["post_prepass_calls"] += 1
+        time.sleep(0.05)
+        return {n: f"Kenta_{i}" for i, n in enumerate(names.keys())}
+
+    options = TranslateOptions(
+        target_lang="Vietnamese", provider="google", model="google",
+        batch_size=2, workers=2, use_memory=False, save_memory=False,
+    )
+
+    original_make = tp._make_provider
+    original_translate = tp.translate_namebox_names
+    tp._make_provider = lambda _o, _g="": _MockProvider([lambda s: f"VI:{s}"])
+    tp.translate_namebox_names = fake_translate_namebox_names
+    tp.extract_namebox_names = synced_extract
+    try:
+        run_translate(entries, out, options)
+    finally:
+        tp._make_provider = original_make
+        tp.translate_namebox_names = original_translate
+        tp.extract_namebox_names = original_extract
+
+    assert state["post_prepass_calls"] == 1, (
+        f"Per-batch dedup failed: expected 1 call after pre-pass, "
+        f"got {state['post_prepass_calls']}"
+    )
+
+
+def test_namebox_map_persisted_to_disk(tmp_path):
+    """After a run that translates namebox names, the .namebox.csv side file
+    must exist so future runs can resume without re-translating known names."""
+    entries = [
+        TextEntry(Path("a.json"), "$.k0", "\\n<健太>「a」"),
+        TextEntry(Path("a.json"), "$.k1", "\\n<健太>「b」"),
+    ]
+    out = tmp_path / "translations.csv"
+
+    import game_llm_translator.translate_pipeline as tp
+
+    def fake_translate_namebox_names(_provider, names, _target, _source):
+        return {n: f"Kenta" for n in names.keys()}
+
+    options = TranslateOptions(
+        target_lang="Vietnamese", provider="google", model="google",
+        batch_size=2, workers=1, use_memory=False, save_memory=False,
+    )
+
+    original_make = tp._make_provider
+    original_translate = tp.translate_namebox_names
+
+    tp._make_provider = lambda _o, _g="": _MockProvider([lambda s: f"VI:{s}"])
+    tp.translate_namebox_names = fake_translate_namebox_names
+    try:
+        run_translate(entries, out, options)
+    finally:
+        tp._make_provider = original_make
+        tp.translate_namebox_names = original_translate
+
+    namebox_csv = tmp_path / "translations.namebox.csv"
+    assert namebox_csv.exists(), "Expected namebox map persisted next to translations.csv"
+    content = namebox_csv.read_text(encoding="utf-8")
+    assert "健太" in content
+    assert "Kenta" in content
+
+
+def test_namebox_map_loaded_on_resume_skips_pre_translation(tmp_path):
+    """Second run with the namebox CSV already on disk must NOT call
+    translate_namebox_names again for names already in the file."""
+    entries = [TextEntry(Path("a.json"), "$.k0", "\\n<健太>「a」")]
+    out = tmp_path / "translations.csv"
+
+    # Seed the namebox map file as if a previous run wrote it.
+    namebox_csv = tmp_path / "translations.namebox.csv"
+    namebox_csv.write_text(
+        "original,translation\n健太,Kenta\n",
+        encoding="utf-8",
+    )
+
+    import game_llm_translator.translate_pipeline as tp
+
+    call_count = 0
+
+    def fake_translate_namebox_names(_provider, names, _target, _source):
+        nonlocal call_count
+        call_count += 1
+        return {n: "ShouldNotBeUsed" for n in names.keys()}
+
+    options = TranslateOptions(
+        target_lang="Vietnamese", provider="google", model="google",
+        batch_size=2, workers=1, use_memory=False, save_memory=False,
+    )
+
+    original_make = tp._make_provider
+    original_translate = tp.translate_namebox_names
+    tp._make_provider = lambda _o, _g="": _MockProvider([lambda s: f"VI:{s}"])
+    tp.translate_namebox_names = fake_translate_namebox_names
+    try:
+        run_translate(entries, out, options)
+    finally:
+        tp._make_provider = original_make
+        tp.translate_namebox_names = original_translate
+
+    assert call_count == 0, "Pre-pass must skip names already loaded from disk"
+
+
+def test_should_split_on_error_recognizes_truncate_and_524():
+    from game_llm_translator.translate_pipeline import _should_split_on_error
+    assert _should_split_on_error(RuntimeError("524 timeout from server"))
+    assert _should_split_on_error(ValueError("Name translation truncated (max_tokens)"))
+    assert _should_split_on_error(ValueError("Response had finish_reason=length"))
+    assert _should_split_on_error(ValueError("LLM response was not valid JSON: ..."))
+    assert not _should_split_on_error(RuntimeError("429 rate limit"))
+    assert not _should_split_on_error(RuntimeError("connection refused"))

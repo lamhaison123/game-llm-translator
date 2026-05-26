@@ -858,6 +858,38 @@ def test_validate_cjk_re_shares_pattern_with_llm():
     assert validate._CJK_RE is llm._CJK_RE
 
 
+def test_build_system_blocks_separates_stable_and_glossary():
+    """The stable block must be identical across calls with the same target;
+    only the glossary block carries per-batch variation. Anthropic uses this
+    split to keep the large stable system text in the prompt cache while the
+    glossary changes per batch."""
+    from game_llm_translator.llm import _build_system_blocks
+
+    stable1, gloss1 = _build_system_blocks("Vietnamese", "## Glossary\n- foo -> bar")
+    stable2, gloss2 = _build_system_blocks("Vietnamese", "## Glossary\n- baz -> qux")
+    # Stable text MUST be byte-identical so Anthropic's content-hash cache hits.
+    assert stable1 == stable2
+    assert "RPG Maker" in stable1  # sanity: contains the BASE prompt
+    # Glossary varies per call.
+    assert gloss1 != gloss2
+    assert "foo -> bar" in gloss1
+    assert "baz -> qux" in gloss2
+
+    # Different target language → different stable block (lang rules change).
+    stable_en, _ = _build_system_blocks("English", "")
+    assert stable_en != stable1
+
+
+def test_build_system_blocks_empty_glossary_returns_empty_string():
+    """When no glossary is supplied the second block is empty so callers can
+    safely skip adding it to the system list."""
+    from game_llm_translator.llm import _build_system_blocks
+
+    stable, gloss = _build_system_blocks("Vietnamese", "")
+    assert gloss == ""
+    assert stable  # still non-empty (BASE+lang rules)
+
+
 def test_replace_untranslated_namebox_names_skips_fallback_entries():
     """Fallback entries (target == source) must NOT have their namebox name partially
     replaced — that would create a misleading 'name translated, dialogue untranslated'

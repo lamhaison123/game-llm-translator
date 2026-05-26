@@ -650,6 +650,15 @@ def _build_system_prompt(target_lang: str | None, glossary_block: str = "") -> s
     return prompt
 
 
+def _build_system_blocks(target_lang: str | None, glossary_block: str = "") -> tuple[str, str]:
+    """Return (stable_part, glossary_part). The stable part is identical across
+    every batch with the same target language, so providers can cache it. The
+    glossary part changes per batch and must NOT share a cache key with stable."""
+    lang_key = _lang_code(target_lang, "auto").lower()
+    addon = _LANG_SPECIFIC_RULES.get(lang_key, "")
+    return SYSTEM_PROMPT_BASE + addon, glossary_block or ""
+
+
 SYSTEM_PROMPT = SYSTEM_PROMPT_BASE  # kept for backward compat with tests
 
 
@@ -1252,14 +1261,21 @@ class AnthropicProvider(LLMProvider):
     def translate_batch(self, entries: list[TextEntry], target_lang: str, source_lang: str | None = None) -> list[TranslationResult]:
         self._check_stop()
         masked_entries, token_maps = _mask_entries(entries)
-        system_prompt = _build_system_prompt(target_lang, self.glossary_block)
+        stable_block, glossary_block = _build_system_blocks(target_lang, self.glossary_block)
         max_tokens = min(_estimate_output_tokens(masked_entries), 8192)
         user_prompt = _user_prompt(masked_entries, target_lang, source_lang)
         log_api_call("anthropic", "REQUEST", user_prompt, entry_count=len(entries))
+        # Split system into two blocks so the large stable block (BASE+lang rules)
+        # gets a stable cache key while the per-batch glossary does not invalidate it.
+        system: list[dict[str, Any]] = [
+            {"type": "text", "text": stable_block, "cache_control": {"type": "ephemeral"}}
+        ]
+        if glossary_block:
+            system.append({"type": "text", "text": glossary_block})
         message = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
-            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            system=system,
             messages=[{"role": "user", "content": user_prompt}],
         )
         text = _anthropic_message_text(message)
