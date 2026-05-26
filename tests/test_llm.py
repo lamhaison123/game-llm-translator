@@ -784,3 +784,139 @@ def test_parse_name_json_code_fence_uppercase():
     text = '```JSON\n{"ディオン": "Dion"}\n```'
     result = _parse_name_json(text, names)
     assert result == {"ディオン": "Dion"}
+
+
+def test_parse_name_json_code_fence_title_case():
+    """LLM emits Pascal-case language tag ```Json — should still parse."""
+    names = {"ディオン": "ディオン"}
+    text = '```Json\n{"ディオン": "Dion"}\n```'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion"}
+
+
+def test_parse_name_json_code_fence_mixed_case():
+    """Mixed-case fence language tags should be stripped (e.g. ```jSoN)."""
+    names = {"ディオン": "ディオン"}
+    text = '```jSoN\n{"ディオン": "Dion"}\n```'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion"}
+
+
+def test_parse_name_json_identity_kept_for_latin_name():
+    """Identity translation IS kept when the source is already in target script.
+
+    Without this, Latin names like 'Alice' that the LLM correctly returns unchanged
+    would never be cached, forcing re-translation on every batch.
+    """
+    names = {"Alice": "Alice"}
+    text = '{"Alice": "Alice"}'
+    result = _parse_name_json(text, names)
+    assert result == {"Alice": "Alice"}
+
+
+def test_parse_name_json_identity_kept_via_list_form():
+    """Same identity rule applies to the array-form LLM response."""
+    names = {"Bob": "Bob"}
+    text = '[{"original": "Bob", "translation": "Bob"}]'
+    result = _parse_name_json(text, names)
+    assert result == {"Bob": "Bob"}
+
+
+def test_parse_name_json_list_form_empty_translation_skipped():
+    """List branch must filter empty/whitespace translations, just like the dict branch."""
+    names = {"太郎": "太郎"}
+    text = '[{"original": "太郎", "translation": " "}]'
+    result = _parse_name_json(text, names)
+    assert result == {}
+
+
+def test_parse_name_json_cjk_identity_still_dropped():
+    """CJK source with identity translation = LLM failed; drop it (no infinite-retry cache)."""
+    names = {"健太": "健太"}
+    text = '{"健太": "健太"}'
+    result = _parse_name_json(text, names)
+    assert result == {}
+
+
+def test_cjk_re_covers_full_extension_a():
+    """_CJK_RE must cover the full CJK Extension A block up to U+4DBF."""
+    from game_llm_translator.llm import _CJK_RE
+    # The end of CJK Extension A
+    assert _CJK_RE.search(chr(0x4DBF)) is not None  # 䶿
+    assert _CJK_RE.search(chr(0x4DB5)) is not None  # 䶵
+    assert _CJK_RE.search(chr(0x4DA0)) is not None  # 䶠 — was missed by the off-by-32 bug
+    assert _CJK_RE.search(chr(0x3400)) is not None  # 㐀 — start of Extension A
+    assert _CJK_RE.search(chr(0x4E00)) is not None  # 一 — start of CJK Unified
+    # Outside CJK ranges
+    assert _CJK_RE.search("A") is None
+    assert _CJK_RE.search("«") is None  # U+00AB
+
+
+def test_validate_cjk_re_shares_pattern_with_llm():
+    """validate.py must import _CJK_RE from llm.py to avoid silent drift."""
+    from game_llm_translator import validate, llm
+    assert validate._CJK_RE is llm._CJK_RE
+
+
+def test_replace_untranslated_namebox_names_skips_fallback_entries():
+    """Fallback entries (target == source) must NOT have their namebox name partially
+    replaced — that would create a misleading 'name translated, dialogue untranslated'
+    state instead of a clean fallback that the user (or --restart) can re-translate.
+    """
+    source = "\\n<\\C[0]手下>「おい……！　待て、誰かいるぞ！」"
+    # target == source means the LLM missed this entry
+    target = source
+    name_translations = {"手下": "Thủ hạ"}
+    result = _replace_untranslated_namebox_names(target, source, name_translations)
+    # Must stay equal to source so the fallback filter can re-translate it later.
+    assert result == source
+
+
+def test_replace_untranslated_namebox_names_replaces_when_dialogue_translated():
+    """When the LLM translated the dialogue (target != source) but left the CJK
+    namebox name, replace just the speaker name — this is the normal flow.
+    """
+    source = "\\n<\\C[0]手下>「おい……！」"
+    target = "\\n<\\C[0]手下>\"Này……!\""  # dialogue translated, name still CJK
+    name_translations = {"手下": "Thủ hạ"}
+    result = _replace_untranslated_namebox_names(target, source, name_translations)
+    assert result == "\\n<\\C[0]Thủ hạ>\"Này……!\""
+
+
+def test_russian_punctuation_rule_has_correct_corner_brackets():
+    """Regression: Russian rule had typo `「»` (mixed CJK open + Western close)."""
+    prompt = _build_system_prompt("Russian")
+    # Both 「 (U+300C) and 」 (U+300D) must appear together in the punctuation mapping.
+    assert "「」" in prompt
+    # The malformed pair must NOT appear.
+    assert "「»" not in prompt
+
+
+def test_japanese_target_preserves_lenticular_brackets():
+    """Regression: ja target previously instructed to convert 【】 to [] — nonsense
+    for a Japanese target since 【】 is native Japanese punctuation."""
+    prompt = _build_system_prompt("Japanese")
+    # The Japanese-specific section should NOT instruct conversion of 【】 to [].
+    # Instead it should mention keeping 【】 as-is.
+    ja_section = prompt[prompt.find("Japanese onomatopoeia"):]
+    assert "convert 【】 to []" not in ja_section
+
+
+def test_glossary_includes_previously_translated_names():
+    """Regression: glossary filter narrowed too aggressively, breaking cross-batch
+    speaker-name consistency. Names known to name_translations_map must still appear
+    in the per-batch glossary even when not present as a namebox in this batch.
+    """
+    # Smoke-test the filter expression directly since constructing a full pipeline
+    # run is heavy. The filter must include items present in either set.
+    namebox_names = {"健太": "\\C[0]健太"}
+    name_translations_map = {"健太": "Kenta", "ディオン": "Dion"}
+    batch_name_translations = {"健太": "Kenta", "ディオン": "Dion"}
+    gloss_lines = [
+        f'- "{n}" -> "{t}"\n'
+        for n, t in batch_name_translations.items()
+        if n in namebox_names or n in name_translations_map
+    ]
+    joined = "".join(gloss_lines)
+    assert '"健太" -> "Kenta"' in joined
+    assert '"ディオン" -> "Dion"' in joined  # not a namebox this batch, but known

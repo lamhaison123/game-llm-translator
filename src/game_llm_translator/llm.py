@@ -72,7 +72,9 @@ def _lang_code(language: str | None, default: str = "auto") -> str:
 _INNER_CTRL_RE = re.compile(
     r"(\\F[A-Za-z]*\[[^\]]*\]|\\OC\[\d+\]|\\OO\[\d+\]|\\FS\[\d+\]|\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z]+|\\[{}.$!><^_\\]|%\d+|%[sdfox]|\{[^{}]{1,80}\}|\[[A-Za-z0-9_]+\]|\$[A-Za-z0-9_]+)"
 )
-_CJK_RE = re.compile(r"[㐀-䶟一-鿿぀-ヿ가-힣]")
+# Covers CJK Unified Ideographs Extension A (U+3400-U+4DBF), CJK Unified Ideographs
+# (U+4E00-U+9FFF), Hiragana + Katakana (U+3040-U+30FF), and Hangul Syllables (U+AC00-U+D7A3).
+_CJK_RE = re.compile(r"[㐀-䶿一-鿿぀-ヿ가-힣]")
 # Matches non-namebox angle-bracket tags like <area>, <ItemImage:path>, <N_01>.
 # These are NOT YEP_MessageCore nameboxes — they are RPG Maker placeholders that
 # must stay fully opaque. A namebox is identified by having control codes (\\n, \\F, etc.)
@@ -156,9 +158,20 @@ def extract_namebox_names(entries: list[TextEntry]) -> dict[str, str]:
 
 
 def _replace_untranslated_namebox_names(target: str, source: str, name_translations: dict[str, str]) -> str:
-    """If the namebox name in target is still CJK/untranslated, replace with translation."""
+    """If the namebox name in target is still CJK/untranslated, replace with translation.
+
+    Skip when target == source (the entry is a fallback — the LLM did not translate
+    the dialogue body). Partially replacing only the speaker name would produce a
+    misleading "half-translated" entry: the namebox shows the target language while
+    the dialogue is still in the source language. Leave such entries fully untranslated
+    so they get flagged by the fallback filter and re-translated on the next pass.
+    """
+    if not name_translations:
+        return target
+    if target == source:
+        return target
     src_match = _NAMEBOX_PREFIX_RE.match(source)
-    if not src_match or not name_translations:
+    if not src_match:
         return target
     src_visible = _INNER_CTRL_RE.sub("", src_match.group(2)).strip()
     translation = name_translations.get(src_visible)
@@ -295,7 +308,7 @@ Some RPG Maker MV/MZ games use the Yanfly MessageCore plugin to display speaker 
 14. For System.json array entries (armorTypes, elements, equipTypes, skillTypes, weaponTypes): these are short UI labels in menus. Translate them with standard RPG terminology, keeping each entry concise. Some MZ games have per-character equipment types (e.g. "アキナ専用" = "Akina-only") — translate the descriptive word but keep character names consistent with speaker names.
 15. For plugin UI text (context "plugin UI text"): these are short labels from custom plugin overlays like phone-menu apps, galleries, or shop UIs. Keep translations very short (2-4 words ideal). Format strings like %1, %2 in plugin UI are runtime substitution markers, not RPG Maker control codes — preserve them exactly.
 16. For already-partially-translated games: when a source string mixes CJK characters with target-language text (e.g. Japanese + Vietnamese), the target-language portion is likely an existing partial translation. Keep existing target-language text consistent; only translate the remaining CJK portions. Do NOT re-translate already-translated segments.
-17. Corner brackets 【…】 (lenticular brackets) in Japanese text are emphasis/title markers — they wrap chapter names, scene titles, skill names, or important terms. Always translate the text INSIDE 【…】 into the target language, keeping the 【…】 brackets themselves. Example: 【踊り子ーその２】を回想しますか？ → 【Vũ công — Phần 2】Bạn có muốn hồi tưởng không? (NOT 【踊り子ーその２】を回想しますか？). The content inside 【…】 is regular game text (titles, labels, terms), NOT proper nouns that must stay untranslated.
+17. Corner brackets 【…】 (lenticular brackets) in Japanese text are emphasis/title markers — they wrap chapter names, scene titles, skill names, or important terms. Always translate the text INSIDE 【…】 into the target language. The brackets themselves should be converted or preserved according to the target language's punctuation conventions described in the language-specific rules below (e.g. keep 【】 for CJK targets, convert to [] for Latin-script targets). The content inside 【…】 is regular game text (titles, labels, terms); if the content IS a proper noun or established character name, apply the proper-noun rules (transliterate/preserve) rather than translating it.
 
 ## Context usage
 - The "context" field describes the type of text. Common values:
@@ -365,8 +378,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Preserve sentence-final particles and speech patterns that define character personality (だ/である/だわ/の/わ/ぜ/ぞ/かしら/なの etc.).
 - Keep katakana loanwords for modern/foreign concepts; use kanji/kana for traditional RPG terms.
 - Japanese onomatopoeia/mimetic words (ドキドキ, ワー, うぅ…, ふふっ): keep them in natural Japanese — do NOT translate to another language.
-- CJK full-width punctuation: preserve as-is (：。、「」、〜), but convert 【】 to [] since corner brackets are Japanese-specific emphasis markers.
-- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
+- CJK full-width punctuation: preserve as-is (：。、「」、〜, 【】). Corner brackets 【】 are native Japanese punctuation — keep them when the target is Japanese.
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and keep 【】 as-is for Japanese targets.
 - For item/skill descriptions: keep concise; maintain existing \\i[N] icon token positions.
 - For battle messages with %1/%2: keep the format, e.g. "%1は%2を使った！"
 - For choices: keep them short since they appear in choice windows.
@@ -377,8 +390,8 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
 - Use Simplified Chinese unless the context clearly calls for Traditional (e.g. Taiwan/Hong Kong game).
 - Keep RPG terminology consistent throughout the batch: 技能→skill, 物品→item, 任务→quest, 装备→equipment, 魔法→magic.
 - Match formality level to the character's role and the scene's tone.
-- Preserve CJK punctuation style (：。、「」、～, 【】→【】keeping as-is for CJK target) consistent with Chinese conventions.
-- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — for CJK-to-CJK translation, keep 【】 as-is since they are native punctuation; for CJK-to-non-CJK, convert 【】 to [].
+- Preserve CJK punctuation style (：。、「」、～) consistent with Chinese conventions. Keep 【】 as-is — they are native Chinese punctuation.
+- Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis. For Chinese (a CJK target), translate the text inside and keep the 【】 brackets unchanged.
 - For character dialogue: distinguish register by social role — formal characters use 您/阁下, casual characters use 你/咱.
 - Japanese honorific suffixes → Chinese equivalents: -さん→先生/女士 (or omit), -くん→同学/小+surname, -ちゃん→小+name, -先生→老师, -様→大人.
 - Chinese onomatopoeia for Japanese mimetic words: ドキドキ→扑通扑通, ワー→哇, うぅ…→呜…, ふふっ→呵呵.
@@ -487,7 +500,7 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Superior/teacher: я-Вы/Вам
 - Japanese honorific suffixes → Russian: -さん→-сан (keep) or господин/госпожа, -くん→-кун (keep), -ちゃん→-тян (keep), -先生→сэнсэй, -様→-сама/господин.
 - For battle messages with %1/%2: keep format, e.g. "%1 использует %2!" — ensure Russian case agreement.
-- CJK punctuation → Russian: ：→:, 。→., 、→,, 「»→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
+- CJK punctuation → Russian: ：→:, 。→., 、→,, 「」→«»/\"..", 〜→~, 【】→[] (corner brackets become square brackets).
 - Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese via Polivanov system (タカシ→Такаси), Chinese via Palladius (健太→Цзяньтай).
 - For state names: use Russian RPG terminology (Гибель/KO, Яд, Сон, Паралич, Молчание, etc.).
@@ -598,7 +611,7 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Very formal: ben-siz/Siz
 - Japanese honorific suffixes → Turkish: -さん→Bey/Hanım, -くん→omit veya ad, -ちゃん→küçük + ad, -先生→Usta/Hoca, -様→Bey/Hanım/Efendi.
 - For battle messages with %1/%2: keep format, e.g. "%1 %2 kullandı!" — Turkish SOV word order.
-- CJK punctuation → Turkish: ：→:, 。→., 、→,, 「」→""/«»", 〜→~, 【】→[] (corner brackets become square brackets).
+- CJK punctuation → Turkish: ：→:, 。→., 、→,, 「」→"" or «», 〜→~, 【】→[] (corner brackets become square brackets).
 - Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names naturally (サクラ→Sakura). Keep romaji as-is.
 - For state names: use Turkish RPG terminology (KO/Ölü, Zehir, Uyku, Felç, Sessizlik, etc.).
@@ -617,7 +630,7 @@ _LANG_SPECIFIC_RULES: dict[str, str] = {
   • Very formal: أنا-حضرتك/سعادتك
 - Japanese honorific suffixes → Arabic: -さん→السيد/السيدة, -くん→فتى/محذوف, -ちゃん→تصغير, -先生→أستاذ/معلم, -様→سيدي/سيدتي.
 - For battle messages with %1/%2: keep format, e.g. "استخدم %1 %2!" — ensure RTL/LTR mixing is handled correctly.
-- CJK punctuation → Arabic: ：→:, 。→., 、→,, 「」→""/«»", 〜→~, 【】→[] (corner brackets become square brackets).
+- CJK punctuation → Arabic: ：→:, 。→., 、→,, 「」→"" or «», 〜→~, 【】→[] (corner brackets become square brackets).
 - Corner brackets 【…】 wrap chapter/scene titles, skill names, or emphasis — translate the text inside and convert 【】 to [].
 - For speaker names: transliterate Japanese names to Arabic script (サクラ→ساكورا). Chinese → Pinyin in Arabic script.
 - For state names: use Arabic RPG terminology (وفاة/KO, سم, نوم, شلل, صمت, etc.).
@@ -647,11 +660,33 @@ _NAME_TRANSLATE_SYSTEM = """You translate speaker names from a game. Translate e
 Return ONLY a JSON object mapping each original name to its translation. No explanation, no markdown fences."""
 
 
+_FENCE_LANG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*\s*")
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip surrounding triple-backtick code fence and optional language tag.
+
+    Handles ```json, ``` json (with space), ```JSON, ```Json (mixed case),
+    and other language hints like ```python, ```jsonl. Backtick stripping is
+    bounded: only leading/trailing runs of backticks are removed.
+    """
+    if not text.startswith("```"):
+        return text
+    stripped = text.strip("`").lstrip()
+    match = _FENCE_LANG_RE.match(stripped)
+    if match:
+        stripped = stripped[match.end():]
+    return stripped.strip()
+
+
 def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
-    """Parse LLM response for name translation. Accepts both JSON object and JSON array of items."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.strip("`").lstrip().removeprefix("json").removeprefix("JSON").strip()
+    """Parse LLM response for name translation. Accepts both JSON object and JSON array of items.
+
+    Identity translations (target == source) are kept ONLY for non-CJK source names
+    (e.g. "Alice" → "Alice" is valid; "健太" → "健太" means the LLM did not translate).
+    This prevents repeated retries for names that are already in the target script.
+    """
+    text = _strip_code_fence(text.strip())
     text = _repair_mojibake(text)
     try:
         data = json.loads(text)
@@ -660,10 +695,26 @@ def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
             data = json.loads(_repair_invalid_escapes(text))
         except json.JSONDecodeError:
             return {}
+
+    def _accept(original: str, translated: str) -> bool:
+        if not (isinstance(original, str) and isinstance(translated, str)):
+            return False
+        if original not in names:
+            return False
+        stripped = translated.strip()
+        if not stripped:
+            return False
+        # Drop identity translations only when source contains CJK — that means the LLM
+        # failed to translate. Non-CJK identities (Latin names, already-target script)
+        # are legitimate and recording them prevents re-translation each batch.
+        if stripped == original and _CJK_RE.search(original):
+            return False
+        return True
+
     translations: dict[str, str] = {}
     if isinstance(data, dict):
         for original, translated in data.items():
-            if original in names and isinstance(translated, str) and translated.strip() and translated.strip() != original:
+            if _accept(original, translated):
                 translations[original] = translated.strip()
     elif isinstance(data, list):
         # Fallback: LLM returned array of dicts like [{"original": "ディオン", "translation": "Dion"}]
@@ -671,7 +722,7 @@ def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
             if isinstance(item, dict):
                 original = item.get("original") or item.get("source") or item.get("name")
                 translated = item.get("translation") or item.get("target")
-                if isinstance(original, str) and isinstance(translated, str) and original in names and translated.strip() != original:
+                if _accept(original, translated):
                     translations[original] = translated.strip()
     return translations
 
@@ -713,6 +764,7 @@ def translate_namebox_names(
     # For LLM providers, use the specialized name-translation prompt
     system_prompt = _NAME_TRANSLATE_SYSTEM.format(target_lang=lang)
     user_prompt = json.dumps(name_list, ensure_ascii=False)
+    truncated = False
     try:
         if isinstance(provider, AnthropicProvider):
             message = provider.client.messages.create(
@@ -722,8 +774,7 @@ def translate_namebox_names(
                 messages=[{"role": "user", "content": user_prompt}],
             )
             text = _anthropic_message_text(message)
-            if getattr(message, "stop_reason", None) == "max_tokens":
-                raise ValueError("Name translation response truncated (max_tokens)")
+            truncated = getattr(message, "stop_reason", None) == "max_tokens"
         elif isinstance(provider, OpenAIProvider):
             response = provider.client.chat.completions.create(
                 model=provider.model,
@@ -738,8 +789,7 @@ def translate_namebox_names(
             if choices:
                 choice = choices[0]
                 finish = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
-                if finish == "length":
-                    raise ValueError("Name translation response truncated (finish_reason=length)")
+                truncated = finish == "length"
         else:
             # Unknown provider type — fall back to translate_batch (less ideal but functional)
             from .models import TextEntry as _TE
@@ -753,7 +803,16 @@ def translate_namebox_names(
                     if idx < len(name_list):
                         translations[name_list[idx]] = translated
             return translations
-        return _parse_name_json(text, names)
+        parsed = _parse_name_json(text, names)
+        if truncated:
+            # Truncated response may still contain valid prefix entries — surface a warning
+            # so the user can raise max_tokens or shrink batches, but don't discard the
+            # partial result the way `raise` + `except Exception: return {}` would.
+            log_event(
+                f"WARN: namebox name translation truncated by provider "
+                f"(got {len(parsed)} of {len(name_list)} names; consider smaller batches)"
+            )
+        return parsed
     except RuntimeError:
         raise
     except Exception:

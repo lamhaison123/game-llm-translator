@@ -385,7 +385,15 @@ def run_translate(
                     _log(options, f"WARN: namebox name translation failed: {exc}")
             # Inject name translations into glossary
             if batch_name_translations:
-                name_gloss_lines = [f'- "{n}" -> "{t}"\n' for n, t in batch_name_translations.items() if n in namebox_names]
+                # Include both current-batch nameboxes AND previously-translated names
+                # from the shared map. Cross-batch consistency requires the LLM to see
+                # established speaker translations whenever the name appears anywhere in
+                # the dialogue — not only when it is the current batch's namebox prefix.
+                name_gloss_lines = [
+                    f'- "{n}" -> "{t}"\n'
+                    for n, t in batch_name_translations.items()
+                    if n in namebox_names or n in name_translations_map
+                ]
                 if name_gloss_lines:
                     name_glossary = "## Speaker Name Translations (apply inside <...> namebox brackets)\n" + "".join(name_gloss_lines)
                     batch_glossary = (batch_glossary + "\n" + name_glossary) if batch_glossary else name_glossary
