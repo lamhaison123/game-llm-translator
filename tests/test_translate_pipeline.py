@@ -422,3 +422,78 @@ def test_run_translate_parallel_mixed_failure_recovers_and_counts_failed_batches
     assert report.fallback == 0
     assert report.batches_failed == 1
     assert attempts["src1"] == 2
+
+
+def test_namebox_translation_dedups_concurrent_workers(tmp_path):
+    """Two workers processing batches that share a CJK namebox speaker must result
+    in exactly one underlying translate_namebox_names call for that shared name.
+
+    Regression for the TOCTOU race on name_translations_map: previously both
+    workers could snapshot an empty map, both see the name as untranslated, and
+    both call the LLM independently. The fix marks names as in-flight under the
+    coordination lock so the second worker waits instead of duplicating work.
+    """
+    entries = [
+        TextEntry(Path("a.json"), "$.k0", "\\n<健太>「あ」"),
+        TextEntry(Path("a.json"), "$.k1", "\\n<健太>「い」"),
+        TextEntry(Path("a.json"), "$.k2", "\\n<健太>「う」"),
+        TextEntry(Path("a.json"), "$.k3", "\\n<健太>「え」"),
+    ]
+    out = tmp_path / "translations.csv"
+
+    import game_llm_translator.translate_pipeline as tp
+
+    # Barrier the EXTRACT step — forces both worker threads into the namebox-claim
+    # phase simultaneously. Without this the OS scheduler may serialize them and
+    # the race window never opens.
+    start_barrier = threading.Barrier(2)
+    name_call_count = 0
+    name_call_lock = threading.Lock()
+    original_extract = tp.extract_namebox_names
+
+    def synced_extract(batch):
+        result = original_extract(batch)
+        if result:
+            # Only block when there are namebox names to translate; otherwise this
+            # barrier would deadlock single-batch paths in other tests.
+            start_barrier.wait(timeout=2.0)
+        return result
+
+    def fake_translate_namebox_names(_provider, names, _target, _source):
+        nonlocal name_call_count
+        with name_call_lock:
+            name_call_count += 1
+        # Hold the in-flight slot long enough for the other worker to enter
+        # the claim phase, observe the in-flight name, and wait on the Condition.
+        time.sleep(0.05)
+        return {n: f"Kenta_{i}" for i, n in enumerate(names.keys())}
+
+    options = TranslateOptions(
+        target_lang="Vietnamese",
+        provider="google",
+        model="google",
+        batch_size=2,
+        workers=2,
+        use_memory=False,
+        save_memory=False,
+    )
+
+    original_make = tp._make_provider
+    original_translate = tp.translate_namebox_names
+
+    def factory(_options, _glossary_block=""):
+        return _MockProvider([lambda s: f"VI:{s}"])
+
+    tp._make_provider = factory
+    tp.translate_namebox_names = fake_translate_namebox_names
+    tp.extract_namebox_names = synced_extract
+    try:
+        results, report = run_translate(entries, out, options)
+    finally:
+        tp._make_provider = original_make
+        tp.translate_namebox_names = original_translate
+        tp.extract_namebox_names = original_extract
+
+    assert len(results) == 4
+    # The shared CJK name 健太 should be translated exactly once, not once per batch.
+    assert name_call_count == 1, f"Expected 1 namebox-translation call, got {name_call_count}"

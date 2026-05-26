@@ -331,6 +331,12 @@ def run_translate(
     report_lock = threading.Lock()
     glossary_lock = threading.Lock()
     name_translations_lock = threading.Lock()
+    # Coordination for concurrent namebox-name translations across workers.
+    # in_flight tracks names a worker has claimed but not yet finished translating;
+    # cond lets other workers wait until those translations land so their batch's
+    # glossary stays consistent without duplicating LLM calls for the same name.
+    name_translations_cond = threading.Condition(name_translations_lock)
+    name_translations_in_flight: set[str] = set()
     translated_count = len(results)
     failed_batches: list[list[TextEntry]] = []
     # Shared across batches for consistent namebox name translations
@@ -363,26 +369,55 @@ def run_translate(
         # Pre-translate CJK namebox speaker names
         namebox_names = extract_namebox_names(batch)
         if namebox_names:
-            # Only translate names not already in the shared name_translations_map
-            with name_translations_lock:
-                batch_name_translations = dict(name_translations_map)
-            untranslated = {n: c for n, c in namebox_names.items() if n not in batch_name_translations}
-            if untranslated:
+            # Claim names this worker will translate; record names other workers are
+            # already translating so we can wait for them. The claim happens under the
+            # condition lock so two workers cannot independently claim the same name.
+            names_we_translate: dict[str, str] = {}
+            names_to_wait_for: set[str] = set()
+            with name_translations_cond:
+                for n, c in namebox_names.items():
+                    if n in name_translations_map:
+                        continue
+                    if n in name_translations_in_flight:
+                        names_to_wait_for.add(n)
+                    else:
+                        name_translations_in_flight.add(n)
+                        names_we_translate[n] = c
+
+            if names_we_translate:
                 batch_provider_tmp = provider if provider is not None else _make_provider(options, batch_glossary)
+                new_translations: dict[str, str] = {}
                 try:
                     new_translations = translate_namebox_names(
-                        batch_provider_tmp, untranslated, options.target_lang, options.source_lang
-                    )
+                        batch_provider_tmp, names_we_translate, options.target_lang, options.source_lang
+                    ) or {}
                     if new_translations:
-                        batch_name_translations.update(new_translations)
-                        with name_translations_lock:
-                            name_translations_map.update(new_translations)
                         names_str = ", ".join(f"{k}→{v}" for k, v in new_translations.items())
                         _log(options, f"Namebox names: {names_str}")
                 except RuntimeError:
                     raise
                 except Exception as exc:
                     _log(options, f"WARN: namebox name translation failed: {exc}")
+                finally:
+                    # Release in-flight regardless of success; publish any translations we got
+                    # and wake any workers waiting on these names. Runs on `raise` too.
+                    with name_translations_cond:
+                        name_translations_map.update(new_translations)
+                        name_translations_in_flight.difference_update(names_we_translate.keys())
+                        name_translations_cond.notify_all()
+
+            # Wait for translations claimed by other workers so this batch's glossary is complete.
+            # Use a short timeout + stop-check so a pressed Stop button can unblock us.
+            if names_to_wait_for:
+                with name_translations_cond:
+                    while any(n in name_translations_in_flight for n in names_to_wait_for):
+                        if _stopped(options):
+                            break
+                        name_translations_cond.wait(timeout=0.5)
+
+            # Snapshot the map for glossary construction (includes ours + others' translations).
+            with name_translations_lock:
+                batch_name_translations = dict(name_translations_map)
             # Inject name translations into glossary
             if batch_name_translations:
                 # Include both current-batch nameboxes AND previously-translated names
