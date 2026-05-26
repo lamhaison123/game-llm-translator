@@ -15,7 +15,7 @@ from .editor import open_file_editor
 from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz
 from .xunity import apply_xunity, extract_xunity
 from .unity import extract_unity
-from .models import TranslationResult, text_identity
+from .models import TranslationResult, TextEntry, text_identity
 from .translate_pipeline import TranslateOptions, run_translate
 
 app = typer.Typer(help="Translate RPG Maker and Unity game text via LLM API.")
@@ -164,12 +164,183 @@ def _translate_with_resume(
         correction_table_path=correction_table,
         on_log=on_log,
     )
+
+    # Pre-flight summary: show user what the pipeline will do BEFORE spending tokens.
+    # Reads existing translations.csv (if any) to report resume state.
+    if out.exists():
+        try:
+            existing = load_results(out)
+            done = sum(1 for r in existing if r.target.strip() and r.target != r.source)
+            fallback = sum(1 for r in existing if r.target.strip() and r.target == r.source)
+            todo = len(entries) - done - fallback
+            console.print(
+                f"[cyan]Pre-flight:[/cyan] {done}/{len(entries)} done, "
+                f"{fallback} fallback (target==source), {todo} to translate. "
+                f"Provider: {settings.provider}/{settings.model}, workers={workers}."
+            )
+            if fallback:
+                console.print(
+                    f"[yellow]Tip:[/yellow] {fallback} fallback rows will be kept as-is. "
+                    f"Use `game-translator retry {out} --filter fallback` to re-translate them."
+                )
+        except Exception:
+            pass  # If the existing CSV is unreadable, skip the summary — run_translate will report.
+
     results, report = run_translate(entries, out, options)
     console.print(
         f"Done: {report.translated}/{report.total_entries} translated, "
         f"{report.fallback} fallback, {report.reused_memory} from memory"
     )
     return results
+
+
+@app.command()
+def retry(
+    translations_csv: Path = typer.Argument(..., exists=True, help="Existing translations CSV with fallback rows or rows you want re-translated."),
+    target_lang: str = typer.Option("Vietnamese", "--target", "-t"),
+    source_lang: str | None = typer.Option(None, "--source", "-s"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
+    api_key: str | None = typer.Option(None, "--api-key"),
+    api_base: str | None = typer.Option(None, "--api-base"),
+    no_memory: bool = typer.Option(False, "--no-memory"),
+    memory: Path | None = typer.Option(None, "--memory"),
+    glossary: Path | None = typer.Option(None, "--glossary"),
+    correction_table: Path | None = typer.Option(None, "--correction-table"),
+    batch_size: int = typer.Option(30, "--batch-size"),
+    workers: int = typer.Option(1, "--workers", min=1, max=8),
+    filter_kind: str = typer.Option("fallback", "--filter", help="Which rows to retry: 'fallback' (target==source), 'empty' (target==''), 'context=<value>' (rows whose context matches), or 'all'."),
+):
+    """Re-translate selected rows from an existing translations CSV.
+
+    Clears the target of rows matching --filter, then runs the normal translate
+    pipeline. Other rows are preserved (resume logic skips them). Far cheaper
+    than --restart when only a subset of rows need re-translation, e.g. after
+    a 502 burst left a few dozen fallback rows.
+    """
+    existing = load_results(translations_csv)
+    if not existing:
+        console.print(f"[red]{translations_csv}[/red] is empty or unreadable.")
+        raise typer.Exit(code=1)
+
+    def _matches(r: TranslationResult) -> bool:
+        if filter_kind == "all":
+            return True
+        if filter_kind == "fallback":
+            return r.target.strip() != "" and r.target == r.source
+        if filter_kind == "empty":
+            return r.target.strip() == ""
+        if filter_kind.startswith("context="):
+            wanted = filter_kind.split("=", 1)[1]
+            return r.context == wanted
+        console.print(f"[red]Unknown --filter value: {filter_kind}[/red]")
+        raise typer.Exit(code=1)
+
+    cleared = 0
+    rewritten: list[TranslationResult] = []
+    for r in existing:
+        if _matches(r):
+            rewritten.append(TranslationResult(r.file, r.key, r.source, "", r.context, sub_keys=r.sub_keys))
+            cleared += 1
+        else:
+            rewritten.append(r)
+
+    if cleared == 0:
+        console.print(f"No rows matched filter '{filter_kind}'. Nothing to do.")
+        return
+
+    save_results(rewritten, translations_csv)
+    console.print(f"Cleared {cleared} rows (filter: {filter_kind}). Re-running translate pipeline.")
+
+    # Reuse the existing translate flow by feeding entries back through the pipeline.
+    # The resume logic will skip rows whose target is still set.
+    entries = [
+        TextEntry(r.file, r.key, r.source, r.context, "")
+        for r in rewritten
+    ]
+    results = _translate_with_resume(
+        entries, translations_csv, target_lang, source_lang, provider, model, batch_size,
+        api_key, api_base, not no_memory, memory, glossary, correction_table, workers,
+    )
+    console.print(f"Done. {len(results)} entries in {translations_csv}.")
+
+
+@app.command()
+def validate(
+    translations_csv: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False),
+    output: Path | None = typer.Option(None, "--out", "-o", help="Optional JSON report path. If omitted, prints summary to stdout."),
+    strict: bool = typer.Option(False, "--strict", help="Exit non-zero if any warnings or noun inconsistencies are found."),
+):
+    """Validate a translations CSV without re-running the LLM pipeline.
+
+    Reports placeholder mismatches, possible UI overflow, untranslated CJK
+    namebox names, character-name inconsistencies across files, and fallback
+    percentage. Use before `apply` to catch issues that would ship with the
+    game patch.
+    """
+    import json
+    from collections import Counter
+    from .validate import translation_warnings, check_noun_consistency
+
+    results = load_results(translations_csv)
+    if not results:
+        console.print(f"[red]{translations_csv}[/red] is empty.")
+        raise typer.Exit(code=1)
+
+    warning_counter: Counter[str] = Counter()
+    rows_with_warnings: list[dict[str, str]] = []
+    fallback_count = 0
+    empty_count = 0
+    for r in results:
+        if not r.target.strip():
+            empty_count += 1
+            continue
+        if r.target == r.source:
+            fallback_count += 1
+        issues = translation_warnings(r.source, r.target, r.context)
+        for issue in issues:
+            # Strip parenthetical detail to group counts ("placeholder %1 missing (...)")
+            key = issue.split("(", 1)[0].strip()
+            warning_counter[key] += 1
+        if issues:
+            rows_with_warnings.append({
+                "file": str(r.file), "key": r.key, "context": r.context,
+                "source": r.source[:80], "target": r.target[:80],
+                "issues": "; ".join(issues),
+            })
+
+    inconsistencies = check_noun_consistency(results)
+    total = len(results)
+    fallback_pct = (fallback_count / total * 100) if total else 0.0
+
+    report = {
+        "translations_csv": str(translations_csv),
+        "total_rows": total,
+        "empty_target": empty_count,
+        "fallback_target_equals_source": fallback_count,
+        "fallback_percent": round(fallback_pct, 2),
+        "warning_counts": dict(warning_counter),
+        "noun_inconsistencies": [
+            {"source": src, "translations": variants[:10]}
+            for src, variants in inconsistencies[:30]
+        ],
+        "rows_with_warnings": rows_with_warnings[:200],
+    }
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"Report written to {output}")
+    else:
+        console.print(f"Total rows: {total}")
+        console.print(f"Empty target: {empty_count}, Fallback (target==source): {fallback_count} ({fallback_pct:.1f}%)")
+        console.print(f"Warning counts: {dict(warning_counter)}")
+        console.print(f"Noun inconsistencies: {len(inconsistencies)}")
+        for src, variants in inconsistencies[:5]:
+            console.print(f"  '{src}' -> {variants[:5]}")
+
+    if strict and (warning_counter or inconsistencies or fallback_count):
+        raise typer.Exit(code=2)
 
 
 @app.command()
@@ -259,6 +430,30 @@ def pipeline(
     else:
         save_results(results, out_dir / "unity_translations_for_import.csv")
     console.print(f"Done -> {work_dir}")
+
+
+@app.command()
+def diff(
+    old_texts: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, help="Old extraction CSV (e.g. from game v1.0)."),
+    new_texts: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, help="New extraction CSV (e.g. from game v1.1)."),
+    output: Path = typer.Option(..., "--out", "-o", help="Output CSV with status column."),
+    translations: Path | None = typer.Option(None, "--translations", help="Old translations CSV; unchanged entries carry their translation forward."),
+):
+    """Compare two extractions and produce a translation-ready CSV.
+
+    Use after a game patch: re-extract the new version, then run diff against
+    the old extraction + your existing translations. The output CSV has a
+    `status` column (unchanged/changed/new/removed) and pre-filled targets for
+    unchanged entries. Pass that CSV to `translate` to fill in the rest.
+    """
+    from .diff_tool import run_diff
+
+    report = run_diff(old_texts, new_texts, translations, output)
+    s = report.stats
+    console.print(
+        f"Diff: {s['unchanged']} unchanged, {s['changed']} changed (need re-translate), "
+        f"{s['new']} new, {s['removed']} removed -> {output}"
+    )
 
 
 if __name__ == "__main__":
