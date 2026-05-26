@@ -23,6 +23,7 @@ from game_llm_translator.llm import (
     _build_system_prompt,
     extract_namebox_names,
     _replace_untranslated_namebox_names,
+    _parse_name_json,
 )
 from game_llm_translator.models import TextEntry
 
@@ -707,3 +708,55 @@ def test_replace_untranslated_namebox_face_prefix():
     translations = {"希": "Hi"}
     result = _replace_untranslated_namebox_names(target, source, translations)
     assert "<Hi>" in result
+
+
+# ---------------------------------------------------------------------------
+# _parse_name_json
+# ---------------------------------------------------------------------------
+
+def test_parse_name_json_object():
+    """LLM returns JSON object: {"ディオン": "Dion", "長老": "Elder"}."""
+    names = {"ディオン": "ディオン", "長老": "長老"}
+    text = '{"ディオン": "Dion", "長老": "Elder"}'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion", "長老": "Elder"}
+
+
+def test_parse_name_json_with_code_fence():
+    """LLM wraps JSON in markdown code fence."""
+    names = {"ディオン": "ディオン"}
+    text = '```json\n{"ディオン": "Dion"}\n```'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion"}
+
+
+def test_parse_name_json_array_fallback():
+    """LLM returns array of dicts with 'original'/'translation' keys."""
+    names = {"ディオン": "ディオン", "長老": "長老"}
+    text = '[{"original": "ディオン", "translation": "Dion"}, {"original": "長老", "translation": "Elder"}]'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion", "長老": "Elder"}
+
+
+def test_parse_name_json_ignores_unknown_names():
+    """Names not in the input dict are ignored."""
+    names = {"ディオン": "ディオン"}
+    text = '{"ディオン": "Dion", "サクラ": "Sakura"}'
+    result = _parse_name_json(text, names)
+    assert result == {"ディオン": "Dion"}
+    assert "サクラ" not in result
+
+
+def test_parse_name_json_invalid_json():
+    """Invalid JSON returns empty dict."""
+    names = {"ディオン": "ディオン"}
+    result = _parse_name_json("NOT JSON", names)
+    assert result == {}
+
+
+def test_parse_name_json_empty_translation_skipped():
+    """Empty translation strings are skipped."""
+    names = {"ディオン": "ディオン"}
+    text = '{"ディオン": "  "}'
+    result = _parse_name_json(text, names)
+    assert result == {}

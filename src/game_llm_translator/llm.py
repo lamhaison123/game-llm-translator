@@ -630,6 +630,35 @@ _NAME_TRANSLATE_SYSTEM = """You translate speaker names from a game. Translate e
 Return ONLY a JSON object mapping each original name to its translation. No explanation, no markdown fences."""
 
 
+def _parse_name_json(text: str, names: dict[str, str]) -> dict[str, str]:
+    """Parse LLM response for name translation. Accepts both JSON object and JSON array of items."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`").removeprefix("json").strip()
+    text = _repair_mojibake(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            data = json.loads(_repair_invalid_escapes(text))
+        except json.JSONDecodeError:
+            return {}
+    translations: dict[str, str] = {}
+    if isinstance(data, dict):
+        for original, translated in data.items():
+            if original in names and isinstance(translated, str) and translated.strip():
+                translations[original] = translated.strip()
+    elif isinstance(data, list):
+        # Fallback: LLM returned array of dicts like [{"original": "ディオン", "translation": "Dion"}]
+        for item in data:
+            if isinstance(item, dict):
+                original = item.get("original") or item.get("source") or item.get("name")
+                translated = item.get("translation") or item.get("target")
+                if isinstance(original, str) and isinstance(translated, str) and original in names:
+                    translations[original] = translated.strip()
+    return translations
+
+
 def translate_namebox_names(
     provider: LLMProvider,
     names: dict[str, str],
@@ -649,21 +678,57 @@ def translate_namebox_names(
     if not names:
         return {}
     name_list = list(names.keys())
-    system_prompt = _NAME_TRANSLATE_SYSTEM.format(target_lang=target_lang)
-    user_prompt = json.dumps(name_list, ensure_ascii=False)
-    # Build lightweight TextEntry objects to use the provider's translate_batch
-    from .models import TextEntry as _TE
-    fake_entries = [_TE(Path("names"), str(i), n, "speaker name") for i, n in enumerate(name_list)]
-    try:
-        results = provider.translate_batch(fake_entries, target_lang, source_lang)
+    lang = _lang_code(target_lang, "vi")
+    # For MTL providers, translate each name individually
+    if isinstance(provider, MTLProvider):
         translations: dict[str, str] = {}
-        for r in results:
-            translated = r.target.strip()
-            if translated and translated != r.source and r.key.isdigit():
-                idx = int(r.key)
-                if idx < len(name_list):
-                    translations[name_list[idx]] = translated
+        for name in name_list:
+            try:
+                translated = provider.translate_text(name, lang, source_lang)
+                translated = translated.strip()
+                if translated and translated != name:
+                    translations[name] = translated
+            except Exception:
+                pass
         return translations
+    # For LLM providers, use the specialized name-translation prompt
+    system_prompt = _NAME_TRANSLATE_SYSTEM.format(target_lang=lang)
+    user_prompt = json.dumps(name_list, ensure_ascii=False)
+    try:
+        if isinstance(provider, AnthropicProvider):
+            message = provider.client.messages.create(
+                model=provider.model,
+                max_tokens=min(1024, max(256, len(name_list) * 64)),
+                system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            text = _anthropic_message_text(message)
+        elif isinstance(provider, OpenAIProvider):
+            response = provider.client.chat.completions.create(
+                model=provider.model,
+                temperature=0.2,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            text = _chat_completion_text(response)
+        else:
+            # Unknown provider type — fall back to translate_batch (less ideal but functional)
+            from .models import TextEntry as _TE
+            fake_entries = [_TE(Path("names"), str(i), n, "speaker name") for i, n in enumerate(name_list)]
+            results = provider.translate_batch(fake_entries, target_lang, source_lang)
+            translations = {}
+            for r in results:
+                translated = r.target.strip()
+                if translated and translated != r.source and r.key.isdigit():
+                    idx = int(r.key)
+                    if idx < len(name_list):
+                        translations[name_list[idx]] = translated
+            return translations
+        return _parse_name_json(text, names)
+    except RuntimeError:
+        raise
     except Exception:
         return {}
 

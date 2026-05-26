@@ -10,7 +10,7 @@ from pathlib import Path
 from .app_logging import log_event
 from .csv_store import load_results, save_results
 from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories, speaker_name_glossary_from_results
-from .llm import LLMProvider, _replace_untranslated_namebox_names, extract_namebox_names, make_provider, postprocess_translation, translate_namebox_names
+from .llm import LLMProvider, _NAMEBOX_PREFIX_RE, _replace_untranslated_namebox_names, extract_namebox_names, make_provider, postprocess_translation, translate_namebox_names
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
 from .validate import check_noun_consistency, format_noun_warnings, translation_warnings
@@ -330,8 +330,11 @@ def run_translate(
     results_lock = threading.Lock()
     report_lock = threading.Lock()
     glossary_lock = threading.Lock()
+    name_translations_lock = threading.Lock()
     translated_count = len(results)
     failed_batches: list[list[TextEntry]] = []
+    # Shared across batches for consistent namebox name translations
+    name_translations_map = dict(options.name_translations or {})
 
     def _fanout_entry(e: TextEntry) -> list[TextEntry]:
         if options.dedupe_by_source:
@@ -358,10 +361,11 @@ def run_translate(
                     batch_glossary = format_glossary_for_prompt(auto_entries, max_chars=2000)
 
         # Pre-translate CJK namebox speaker names
-        batch_name_translations = dict(options.name_translations or {})
         namebox_names = extract_namebox_names(batch)
         if namebox_names:
-            # Only translate names not already in name_translations
+            # Only translate names not already in the shared name_translations_map
+            with name_translations_lock:
+                batch_name_translations = dict(name_translations_map)
             untranslated = {n: c for n, c in namebox_names.items() if n not in batch_name_translations}
             if untranslated:
                 batch_provider_tmp = provider if provider is not None else _make_provider(options, batch_glossary)
@@ -371,18 +375,25 @@ def run_translate(
                     )
                     if new_translations:
                         batch_name_translations.update(new_translations)
+                        with name_translations_lock:
+                            name_translations_map.update(new_translations)
                         names_str = ", ".join(f"{k}→{v}" for k, v in new_translations.items())
                         _log(options, f"Namebox names: {names_str}")
+                except RuntimeError:
+                    raise
                 except Exception as exc:
                     _log(options, f"WARN: namebox name translation failed: {exc}")
             # Inject name translations into glossary
             if batch_name_translations:
-                name_gloss_lines = [f'- "{n}" -> "{t}"\n' for n, t in batch_name_translations.items() if n in namebox_names]
+                name_gloss_lines = [f'- "{n}" -> "{t}"\n' for n, t in batch_name_translations.items() if n in namebox_names or n in name_translations_map]
                 if name_gloss_lines:
                     name_glossary = "## Speaker Name Translations (apply inside <...> namebox brackets)\n" + "".join(name_gloss_lines)
                     batch_glossary = (batch_glossary + "\n" + name_glossary) if batch_glossary else name_glossary
 
         batch_provider = provider if provider is not None else _make_provider(options, batch_glossary)
+        # Ensure single-worker provider gets the updated glossary with name translations
+        if provider is not None:
+            provider.set_glossary(batch_glossary)
         try:
             batch_results = translate_batch_with_retry(batch_provider, batch, options.target_lang, options.source_lang, options, report, report_lock)
         except Exception as exc:
@@ -395,7 +406,12 @@ def run_translate(
                 with results_lock:
                     for e in batch:
                         for entry in _fanout_entry(e):
-                            results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
+                            source_text = entry.source
+                            # Apply namebox name replacement to fallback entries too
+                            with name_translations_lock:
+                                if name_translations_map and _NAMEBOX_PREFIX_RE.match(entry.source):
+                                    source_text = _replace_untranslated_namebox_names(entry.source, entry.source, name_translations_map)
+                            results.append(TranslationResult(entry.file, entry.key, entry.source, source_text, entry.context))
                     deduped = dedupe_results(results, wanted_ids)
                     results.clear()
                     results.extend(deduped)
@@ -428,11 +444,13 @@ def run_translate(
                 for r in expanded
             ]
         # Post-process: replace any CJK namebox names the LLM left untranslated
-        if batch_name_translations:
+        with name_translations_lock:
+            current_name_translations = dict(name_translations_map)
+        if current_name_translations:
             expanded = [
                 TranslationResult(
                     r.file, r.key, r.source,
-                    _replace_untranslated_namebox_names(r.target, r.source, batch_name_translations),
+                    _replace_untranslated_namebox_names(r.target, r.source, current_name_translations),
                     r.context, sub_keys=r.sub_keys,
                 )
                 for r in expanded
@@ -545,6 +563,18 @@ def run_translate(
                             TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, r.target), r.context, sub_keys=r.sub_keys)
                             for r in expanded
                         ]
+                    # Post-process: replace any CJK namebox names the LLM left untranslated
+                    with name_translations_lock:
+                        current_name_translations = dict(name_translations_map)
+                    if current_name_translations:
+                        expanded = [
+                            TranslationResult(
+                                r.file, r.key, r.source,
+                                _replace_untranslated_namebox_names(r.target, r.source, current_name_translations),
+                                r.context, sub_keys=r.sub_keys,
+                            )
+                            for r in expanded
+                        ]
                     with results_lock:
                         results.extend(expanded)
                         deduped = dedupe_results(results, wanted_ids)
@@ -560,7 +590,11 @@ def run_translate(
                         with results_lock:
                             for e in sub:
                                 for entry in _fanout_entry(e):
-                                    results.append(TranslationResult(entry.file, entry.key, entry.source, entry.source, entry.context))
+                                    source_text = entry.source
+                                    with name_translations_lock:
+                                        if name_translations_map and _NAMEBOX_PREFIX_RE.match(entry.source):
+                                            source_text = _replace_untranslated_namebox_names(entry.source, entry.source, name_translations_map)
+                                    results.append(TranslationResult(entry.file, entry.key, entry.source, source_text, entry.context))
                             deduped = dedupe_results(results, wanted_ids)
                             results.clear()
                             results.extend(deduped)
@@ -577,7 +611,11 @@ def run_translate(
                         with results_lock:
                             entry = sub[0]
                             for e in _fanout_entry(entry):
-                                results.append(TranslationResult(e.file, e.key, e.source, e.source, e.context))
+                                source_text = e.source
+                                with name_translations_lock:
+                                    if name_translations_map and _NAMEBOX_PREFIX_RE.match(e.source):
+                                        source_text = _replace_untranslated_namebox_names(e.source, e.source, name_translations_map)
+                                results.append(TranslationResult(e.file, e.key, e.source, source_text, e.context))
                             deduped = dedupe_results(results, wanted_ids)
                             results.clear()
                             results.extend(deduped)
