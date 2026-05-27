@@ -430,6 +430,74 @@ def run_translate(
             return groups.get(rep_identity_to_group.get(text_identity(e.file, e.key), dedupe_group_key(e)), [e])
         return [e]
 
+    def _finalize_batch_results(batch_results: list[TranslationResult]) -> list[TranslationResult]:
+        """Apply the standard post-LLM chain to a batch of results.
+
+        Order matters: fanout (apply LLM result to all duplicates of the same
+        source) → corrections → postprocess (restore masked tokens, normalize
+        formatting) → replace any untranslated CJK namebox names from the shared
+        map. Used by both the main batch path and the recursive retry path so
+        both paths produce identically post-processed output.
+        """
+        expanded = (
+            fanout_results(batch_results, groups, rep_identity_to_group)
+            if options.dedupe_by_source else batch_results
+        )
+        if corrections:
+            expanded = [
+                TranslationResult(
+                    r.file, r.key, r.source,
+                    postprocess_translation(r.source, apply_correction_table(r.target, corrections)),
+                    r.context, sub_keys=r.sub_keys,
+                )
+                for r in expanded
+            ]
+        else:
+            expanded = [
+                TranslationResult(
+                    r.file, r.key, r.source,
+                    postprocess_translation(r.source, r.target),
+                    r.context, sub_keys=r.sub_keys,
+                )
+                for r in expanded
+            ]
+        with name_translations_lock:
+            current_name_translations = dict(name_translations_map)
+        if current_name_translations:
+            expanded = [
+                TranslationResult(
+                    r.file, r.key, r.source,
+                    _replace_untranslated_namebox_names(r.target, r.source, current_name_translations),
+                    r.context, sub_keys=r.sub_keys,
+                )
+                for r in expanded
+            ]
+        return expanded
+
+    def _record_source_fallback(entries_to_record: list[TextEntry]) -> None:
+        """Append fallback (target = source, possibly with namebox name swap)
+        TranslationResults for entries we could not translate, dedupe, save.
+
+        Called from two paths: content-refusal on the main batch, and
+        content-refusal / final single-entry failure during recursive retry.
+        Caller must hold no locks; this acquires results_lock and
+        name_translations_lock as needed.
+        """
+        with results_lock:
+            for e in entries_to_record:
+                for entry in _fanout_entry(e):
+                    source_text = entry.source
+                    with name_translations_lock:
+                        if name_translations_map and _NAMEBOX_PREFIX_RE.match(entry.source):
+                            source_text = _replace_untranslated_namebox_names(
+                                entry.source, entry.source, name_translations_map,
+                            )
+                    results.append(TranslationResult(entry.file, entry.key, entry.source, source_text, entry.context))
+            deduped = dedupe_results(results, wanted_ids)
+            results.clear()
+            results.extend(deduped)
+            save_results(results, translations_csv)
+
     def process_batch(batch: list[TextEntry]) -> None:
         nonlocal translated_count
         if _stopped(options):
@@ -529,19 +597,7 @@ def run_translate(
                 report.batches_failed += 1
             if _is_content_refusal(exc):
                 _log(options, f"WARN: LLM refused batch (content filter, fallback to source): {str(exc)[:120]}")
-                with results_lock:
-                    for e in batch:
-                        for entry in _fanout_entry(e):
-                            source_text = entry.source
-                            # Apply namebox name replacement to fallback entries too
-                            with name_translations_lock:
-                                if name_translations_map and _NAMEBOX_PREFIX_RE.match(entry.source):
-                                    source_text = _replace_untranslated_namebox_names(entry.source, entry.source, name_translations_map)
-                            results.append(TranslationResult(entry.file, entry.key, entry.source, source_text, entry.context))
-                    deduped = dedupe_results(results, wanted_ids)
-                    results.clear()
-                    results.extend(deduped)
-                    save_results(results, translations_csv)
+                _record_source_fallback(batch)
             else:
                 _log(options, f"Batch failed (deferred): {exc}")
                 with results_lock:
@@ -558,29 +614,7 @@ def run_translate(
         missed = sum(1 for r in batch_results if r.target == r.source)
         if missed:
             _log(options, f"WARN: LLM missed {missed}/{len(batch_results)} entries (fallback to source)")
-        expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
-        if corrections:
-            expanded = [
-                TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, apply_correction_table(r.target, corrections)), r.context, sub_keys=r.sub_keys)
-                for r in expanded
-            ]
-        else:
-            expanded = [
-                TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, r.target), r.context, sub_keys=r.sub_keys)
-                for r in expanded
-            ]
-        # Post-process: replace any CJK namebox names the LLM left untranslated
-        with name_translations_lock:
-            current_name_translations = dict(name_translations_map)
-        if current_name_translations:
-            expanded = [
-                TranslationResult(
-                    r.file, r.key, r.source,
-                    _replace_untranslated_namebox_names(r.target, r.source, current_name_translations),
-                    r.context, sub_keys=r.sub_keys,
-                )
-                for r in expanded
-            ]
+        expanded = _finalize_batch_results(batch_results)
         for item in expanded:
             issues = translation_warnings(item.source, item.target, item.context)
             if issues:
@@ -678,29 +712,7 @@ def run_translate(
                     batch_results = translate_batch_with_retry(retry_provider, sub, options.target_lang, options.source_lang, options, report, report_lock)
                     if _stopped(options):
                         _raise_if_stopped(options)
-                    expanded = fanout_results(batch_results, groups, rep_identity_to_group) if options.dedupe_by_source else batch_results
-                    if corrections:
-                        expanded = [
-                            TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, apply_correction_table(r.target, corrections)), r.context, sub_keys=r.sub_keys)
-                            for r in expanded
-                        ]
-                    else:
-                        expanded = [
-                            TranslationResult(r.file, r.key, r.source, postprocess_translation(r.source, r.target), r.context, sub_keys=r.sub_keys)
-                            for r in expanded
-                        ]
-                    # Post-process: replace any CJK namebox names the LLM left untranslated
-                    with name_translations_lock:
-                        current_name_translations = dict(name_translations_map)
-                    if current_name_translations:
-                        expanded = [
-                            TranslationResult(
-                                r.file, r.key, r.source,
-                                _replace_untranslated_namebox_names(r.target, r.source, current_name_translations),
-                                r.context, sub_keys=r.sub_keys,
-                            )
-                            for r in expanded
-                        ]
+                    expanded = _finalize_batch_results(batch_results)
                     with results_lock:
                         results.extend(expanded)
                         deduped = dedupe_results(results, wanted_ids)
@@ -713,18 +725,7 @@ def run_translate(
                         raise
                     if _is_content_refusal(exc):
                         _log(options, f"WARN: LLM refused sub-batch {len(sub)} entries (content filter, fallback to source)")
-                        with results_lock:
-                            for e in sub:
-                                for entry in _fanout_entry(e):
-                                    source_text = entry.source
-                                    with name_translations_lock:
-                                        if name_translations_map and _NAMEBOX_PREFIX_RE.match(entry.source):
-                                            source_text = _replace_untranslated_namebox_names(entry.source, entry.source, name_translations_map)
-                                    results.append(TranslationResult(entry.file, entry.key, entry.source, source_text, entry.context))
-                            deduped = dedupe_results(results, wanted_ids)
-                            results.clear()
-                            results.extend(deduped)
-                            save_results(results, translations_csv)
+                        _record_source_fallback(sub)
                         return
                     if len(sub) > 1:
                         mid = len(sub) // 2
@@ -734,18 +735,7 @@ def run_translate(
                             retry_sub(sub[mid:])
                     else:
                         _log(options, f"Single entry still failed (keeping source): {exc}")
-                        with results_lock:
-                            entry = sub[0]
-                            for e in _fanout_entry(entry):
-                                source_text = e.source
-                                with name_translations_lock:
-                                    if name_translations_map and _NAMEBOX_PREFIX_RE.match(e.source):
-                                        source_text = _replace_untranslated_namebox_names(e.source, e.source, name_translations_map)
-                                results.append(TranslationResult(e.file, e.key, e.source, source_text, e.context))
-                            deduped = dedupe_results(results, wanted_ids)
-                            results.clear()
-                            results.extend(deduped)
-                            save_results(results, translations_csv)
+                        _record_source_fallback([sub[0]])
 
             for batch in failed_batches:
                 _raise_if_stopped(options)
