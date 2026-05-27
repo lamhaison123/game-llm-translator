@@ -302,7 +302,7 @@ class TranslatorGUI(
         " border: none; padding: 6px 14px; border-radius: 4px; }"
         "QPushButton:hover:enabled { background-color: #4858e0; }"
         "QPushButton:pressed:enabled { background-color: #3a48b8; }"
-        "QPushButton:disabled { background-color: #6f7693; color: #d8dcec; }"
+        "QPushButton:disabled { background-color: #b0b6c8; color: #d8dcec; }"
     )
 
     def _primary_button(self, text: str, slot: Callable[[], None]) -> QPushButton:
@@ -472,6 +472,8 @@ class TranslatorGUI(
     def _on_set_checked(self, target: str, checked: bool) -> None:
         if target == "restart":
             self.restart_check.setChecked(checked)
+            if hasattr(self, "preview_restart_check"):
+                self.preview_restart_check.setChecked(checked)
 
     # ------------------------------------------------------------------
     # Worker management

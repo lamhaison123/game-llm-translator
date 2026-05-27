@@ -87,7 +87,7 @@ class ApplyTabMixin:
         xu.addWidget(xu_label)
         self.xunity_status_label = QLabel("XUnity: no game selected")
         self.xunity_status_label.setWordWrap(True)
-        self.xunity_status_label.setStyleSheet("color: #555;")
+        self.xunity_status_label.setStyleSheet("color: palette(placeholder-text);")
         xu.addWidget(self.xunity_status_label)
         xu_row = QHBoxLayout()
         xu_row.addWidget(self._action_button("Install BepInEx + XUnity...", self.install_xunity_plugin))
@@ -109,7 +109,7 @@ class ApplyTabMixin:
         c.addWidget(c_label)
         self.cheat_status_label = QLabel("Cheat plugin: no game selected")
         self.cheat_status_label.setWordWrap(True)
-        self.cheat_status_label.setStyleSheet("color: #555;")
+        self.cheat_status_label.setStyleSheet("color: palette(placeholder-text);")
         c.addWidget(self.cheat_status_label)
         c_row = QHBoxLayout()
         c_row.addWidget(self._action_button("Apply Cheat...", self.apply_cheat_plugin))
@@ -265,10 +265,10 @@ class ApplyTabMixin:
             self.xunity_status_label.setStyleSheet("color: #7a6000;")
         elif status == "not_installed":
             self.xunity_status_label.setText("XUnity: not installed — click 'Install BepInEx + XUnity...' to set up")
-            self.xunity_status_label.setStyleSheet("color: #555;")
+            self.xunity_status_label.setStyleSheet("color: palette(placeholder-text);")
         else:
             self.xunity_status_label.setText("XUnity: not a Unity game (RPG Maker or unknown engine)")
-            self.xunity_status_label.setStyleSheet("color: #555;")
+            self.xunity_status_label.setStyleSheet("color: palette(placeholder-text);")
 
     def install_xunity_plugin(self) -> None:
         try:

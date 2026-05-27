@@ -119,7 +119,7 @@ class TranslateTabMixin:
             "Correction table CSV columns: find, replace. Applied as post-processing after each batch."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #555;")
+        hint.setStyleSheet("color: palette(placeholder-text);")
         adv.addRow("", hint)
 
         outer.addWidget(advanced)
@@ -228,15 +228,18 @@ class TranslateTabMixin:
     def pipeline(self) -> None:
         # Read widget values on the main thread before starting the worker
         game_type = self.game_type_combo.currentText()
+        texts_csv = self.texts_csv_edit.text()
+        translations_csv = self.translations_csv_edit.text()
+        out_dir_value = self.out_dir_edit.text()
 
         def job() -> None:
             entries = self._extract_entries()
             self._check_stopped()
-            save_entries(entries, Path(self.texts_csv_edit.text()))
+            save_entries(entries, Path(texts_csv))
             self._log(f"Extracted {len(entries)} entries")
-            results = self._translate_entries(entries, Path(self.translations_csv_edit.text()))
+            results = self._translate_entries(entries, Path(translations_csv))
             self._check_stopped()
-            out_dir = Path(self.out_dir_edit.text())
+            out_dir = Path(out_dir_value)
             if game_type == "unity-xunity":
                 apply_xunity(results, out_dir)
             else:

@@ -119,7 +119,7 @@ class LogTabsMixin:
         toolbar.addStretch()
 
         hint = QLabel("Enable 'Log full API requests & responses' in Provider tab to populate this log.")
-        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setStyleSheet("color: palette(placeholder-text); font-size: 11px;")
         toolbar.addWidget(hint)
 
         outer.addLayout(toolbar)
@@ -137,7 +137,7 @@ class LogTabsMixin:
         logs_tab_index = self._find_logs_tab_index()
         if logs_tab_index < 0 or self.tabs.currentIndex() != logs_tab_index:
             return False
-        return self._logs_sub_tabs.currentIndex() == 2  # API Log is 3rd sub-tab
+        return self._logs_sub_tabs.tabText(self._logs_sub_tabs.currentIndex()) == "API Log"
 
     def _find_logs_tab_index(self) -> int:
         for i in range(self.tabs.count()):
@@ -157,9 +157,10 @@ class LogTabsMixin:
 
     def _api_log_poll(self) -> None:
         path = api_log_file_path()
-        if not path.exists():
+        try:
+            size = path.stat().st_size
+        except (FileNotFoundError, OSError):
             return
-        size = path.stat().st_size
         if size != self._api_log_file_size:
             self._api_log_refresh()
 

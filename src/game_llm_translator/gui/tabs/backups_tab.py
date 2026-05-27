@@ -87,7 +87,7 @@ class BackupsTabMixin:
 
         info = QLabel("Restore creates data_before_restore_* first. Delete only removes listed backup folders; game data is not changed.")
         info.setWordWrap(True)
-        info.setStyleSheet("color: #555;")
+        info.setStyleSheet("color: palette(placeholder-text);")
         outer.addWidget(info)
         return tab
 

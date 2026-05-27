@@ -4,7 +4,7 @@ import csv
 import re
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..signals import WorkerSignals
@@ -100,6 +100,9 @@ class PreviewTabMixin:
     _path_picker: object
     _action_button: object
     _safe_button: object
+    # Provided by ReviewTabMixin (sibling mixin on TranslatorGUI):
+    edit_table: Callable[[], None]
+    edit_csv: Callable[[], None]
 
     def _build_preview_tab(self) -> QWidget:
         tab = QWidget()
@@ -144,6 +147,7 @@ class PreviewTabMixin:
         form.addRow("Workers:", self.preview_workers_spin)
 
         self.preview_restart_check = QCheckBox("Ignore existing translations and start over")
+        self.preview_restart_check.setChecked(True)
         form.addRow("", self.preview_restart_check)
 
         outer.addWidget(cfg)
@@ -291,10 +295,10 @@ class PreviewTabMixin:
     def _open_bulk_editor(self) -> None:
         """Open the modal TranslationEditor on the translations.csv from the Setup tab."""
         # Delegate to the ReviewTabMixin implementation already present on the same window.
-        self.edit_table()  # type: ignore[attr-defined]
+        self.edit_table()
 
     def _open_translations_csv_externally(self) -> None:
-        self.edit_csv()  # type: ignore[attr-defined]
+        self.edit_csv()
 
     def _choose_preview_output(self) -> None:
         value, _ = QFileDialog.getOpenFileName(
