@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from game_llm_translator.glossary import build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_glossary, load_glossary_with_categories, speaker_name_glossary_from_results
+from game_llm_translator.glossary import build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_glossary, load_glossary_with_categories, speaker_name_glossary_from_results, validate_glossary
 
 
 def test_load_glossary_basic(tmp_path):
@@ -215,3 +215,69 @@ def test_build_auto_glossary_respects_max_entries():
     results = [(f"Name{i}", f"Trans{i}", "rpg_maker_actors_name") for i in range(100)]
     glossary = build_auto_glossary(results, max_entries=10)
     assert len(glossary) == 10
+
+
+def test_validate_glossary_clean_file_no_warnings(tmp_path):
+    path = tmp_path / "g.csv"
+    path.write_text("term,translation\nKnight,Hiệp sĩ\nSword,Kiếm\n", encoding="utf-8")
+    assert validate_glossary(path) == []
+
+
+def test_validate_glossary_none_path_returns_empty():
+    assert validate_glossary(None) == []
+
+
+def test_validate_glossary_missing_file_reported(tmp_path):
+    warnings = validate_glossary(tmp_path / "nope.csv")
+    assert len(warnings) == 1
+    assert "does not exist" in warnings[0]
+
+
+def test_validate_glossary_missing_columns(tmp_path):
+    path = tmp_path / "g.csv"
+    path.write_text("foo,bar\na,b\n", encoding="utf-8")
+    warnings = validate_glossary(path)
+    assert len(warnings) == 1
+    assert "term" in warnings[0] and "translation" in warnings[0]
+
+
+def test_validate_glossary_duplicate_term(tmp_path):
+    path = tmp_path / "g.csv"
+    path.write_text(
+        "term,translation\nKnight,Hiệp sĩ\nSword,Kiếm\nKnight,Kỵ sĩ\n",
+        encoding="utf-8",
+    )
+    warnings = validate_glossary(path)
+    assert any("duplicate" in w and "Knight" in w for w in warnings)
+
+
+def test_validate_glossary_blank_translation(tmp_path):
+    path = tmp_path / "g.csv"
+    path.write_text("term,translation\nKnight,\nSword,Kiếm\n", encoding="utf-8")
+    warnings = validate_glossary(path)
+    assert any("blank translation" in w and "Knight" in w for w in warnings)
+
+
+def test_validate_glossary_case_conflict(tmp_path):
+    path = tmp_path / "g.csv"
+    path.write_text(
+        "term,translation\nKnight,Hiệp sĩ\nknight,Kỵ binh\n",
+        encoding="utf-8",
+    )
+    warnings = validate_glossary(path)
+    assert any("differs only in case" in w for w in warnings)
+
+
+def test_validate_glossary_control_chars_in_translation(tmp_path):
+    path = tmp_path / "g.csv"
+    # Embed a literal \n inside a quoted CSV field.
+    path.write_text('term,translation\nKnight,"Hiệp\nsĩ"\n', encoding="utf-8")
+    warnings = validate_glossary(path)
+    assert any("control chars" in w for w in warnings)
+
+
+def test_validate_glossary_whitespace_in_term(tmp_path):
+    path = tmp_path / "g.csv"
+    path.write_text("term,translation\n Knight ,Hiệp sĩ\n", encoding="utf-8")
+    warnings = validate_glossary(path)
+    assert any("whitespace" in w for w in warnings)

@@ -298,6 +298,7 @@ def translate_namebox_names(
     """
     if not names:
         return {}
+    from .errors import StoppedByUser
     name_list = list(names.keys())
     lang = _lang_code(target_lang, "vi")
     # For MTL providers, translate each name individually
@@ -309,7 +310,7 @@ def translate_namebox_names(
                 translated = translated.strip()
                 if translated and translated != name:
                     translations[name] = translated
-            except RuntimeError:
+            except StoppedByUser:
                 raise
             except Exception:
                 pass
@@ -366,7 +367,7 @@ def translate_namebox_names(
                 f"(got {len(parsed)} of {len(name_list)} names; consider smaller batches)"
             )
         return parsed
-    except RuntimeError:
+    except StoppedByUser:
         raise
     except Exception:
         return {}
@@ -590,7 +591,8 @@ class LLMProvider(ABC):
 
     def _check_stop(self) -> None:
         if self.stop_event is not None and self.stop_event.is_set():
-            raise RuntimeError("Stopped by user")
+            from .errors import StoppedByUser
+            raise StoppedByUser()
 
     def _sleep_interruptible(self, seconds: float) -> None:
         if seconds <= 0:

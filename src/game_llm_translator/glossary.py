@@ -181,6 +181,62 @@ def format_glossary_categorized(entries: list[tuple[str, str, str]], max_chars: 
     return "".join(parts)
 
 
+def validate_glossary(path: Path | None) -> list[str]:
+    """Inspect a glossary CSV and return human-readable warnings.
+
+    Catches issues the loader silently drops (duplicate term wins last, blank
+    translation, control chars) plus case-fold conflicts that are valid CSV but
+    indicate an authoring mistake. Returns [] when path is None/missing — empty
+    list always means "no problems detected", never "could not read".
+    """
+    if path is None:
+        return []
+    if not path.exists():
+        return [f"Glossary file does not exist: {path}"]
+    warnings: list[str] = []
+    try:
+        with path.open("r", newline="", encoding="utf-8-sig") as fp:
+            reader = csv.DictReader(fp)
+            fieldnames = reader.fieldnames or []
+            if "term" not in fieldnames or "translation" not in fieldnames:
+                return [f"Missing required columns 'term'/'translation' (got: {fieldnames})"]
+            rows = list(reader)
+    except (OSError, csv.Error, UnicodeDecodeError) as exc:
+        return [f"Could not read glossary: {exc}"]
+
+    seen_terms: dict[str, int] = {}
+    casefold_to_term: dict[str, str] = {}
+    for line_no, row in enumerate(rows, start=2):  # +1 for header, +1 for 1-based
+        term_raw = row.get("term") or ""
+        translation_raw = row.get("translation") or ""
+        term = term_raw.strip()
+        translation = translation_raw.strip()
+        if not term and not translation:
+            continue  # blank row, skip
+        if term != term_raw:
+            warnings.append(f"Line {line_no}: term has leading/trailing whitespace ({term_raw!r})")
+        if not term:
+            warnings.append(f"Line {line_no}: term is blank")
+            continue
+        if not translation:
+            warnings.append(f"Line {line_no}: term {term!r} has blank translation")
+            continue
+        if any(ch in translation for ch in ("\n", "\r", "\t")):
+            warnings.append(f"Line {line_no}: term {term!r} translation contains control chars (will break prompt formatting)")
+        if term in seen_terms:
+            warnings.append(f"Line {line_no}: duplicate term {term!r} (first seen at line {seen_terms[term]}, later rows ignored)")
+        else:
+            seen_terms[term] = line_no
+            folded = term.casefold()
+            if folded in casefold_to_term and casefold_to_term[folded] != term:
+                warnings.append(
+                    f"Line {line_no}: term {term!r} differs only in case from "
+                    f"{casefold_to_term[folded]!r} — only one will match"
+                )
+            else:
+                casefold_to_term.setdefault(folded, term)
+    return warnings
+
 
 def speaker_name_glossary_from_results(results: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
     actor_names: dict[str, str] = {}

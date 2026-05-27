@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .app_logging import log_event
 from .csv_store import load_results, save_results
+from .errors import STOPPED, StoppedByUser
 from .glossary import apply_correction_table, build_auto_glossary, format_glossary_categorized, format_glossary_for_prompt, load_correction_table, load_glossary, load_glossary_with_categories, speaker_name_glossary_from_results
 from .llm import LLMProvider, _NAMEBOX_PREFIX_RE, _replace_untranslated_namebox_names, extract_namebox_names, make_provider, postprocess_translation, translate_namebox_names
 from .models import TextEntry, TranslationResult, text_identity
@@ -62,7 +63,7 @@ def _log(options: TranslateOptions, message: str) -> None:
         log_event(message)
 
 
-STOPPED = "Stopped by user"
+STOPPED = STOPPED  # re-exported for tests and external callers
 
 
 def _stopped(options: TranslateOptions) -> bool:
@@ -71,11 +72,7 @@ def _stopped(options: TranslateOptions) -> bool:
 
 def _raise_if_stopped(options: TranslateOptions) -> None:
     if _stopped(options):
-        raise RuntimeError(STOPPED)
-
-
-def _is_stopped_error(exc: BaseException) -> bool:
-    return isinstance(exc, RuntimeError) and str(exc) == STOPPED
+        raise StoppedByUser()
 
 
 def dedupe_results(results: list[TranslationResult], wanted_ids: set[tuple[str, str]] | None = None) -> list[TranslationResult]:
@@ -246,9 +243,9 @@ def translate_batch_with_retry(
         _raise_if_stopped(options)
         try:
             return provider.translate_batch(batch, target_lang, source_lang)
+        except StoppedByUser:
+            raise
         except Exception as exc:
-            if _is_stopped_error(exc):
-                raise
             retryable, suggested = is_retryable(exc)
             if retryable and attempt < 3:
                 if report_lock is None:
@@ -416,12 +413,8 @@ def run_translate(
                     _save_namebox_map(namebox_csv, name_translations_map)
                 except Exception as exc:
                     _log(options, f"WARN: could not persist namebox map: {exc}")
-        except RuntimeError as exc:
-            # Only propagate the Stop signal; other RuntimeErrors are treated as
-            # WARN and the pipeline falls back to per-batch translation.
-            if _is_stopped_error(exc):
-                raise
-            _log(options, f"WARN: namebox pre-pass failed (will fall back to per-batch): {exc}")
+        except StoppedByUser:
+            raise
         except Exception as exc:
             _log(options, f"WARN: namebox pre-pass failed (will fall back to per-batch): {exc}")
 
@@ -545,7 +538,7 @@ def run_translate(
                     if new_translations:
                         names_str = ", ".join(f"{k}→{v}" for k, v in new_translations.items())
                         _log(options, f"Namebox names: {names_str}")
-                except RuntimeError:
+                except StoppedByUser:
                     raise
                 except Exception as exc:
                     _log(options, f"WARN: namebox name translation failed: {exc}")
@@ -556,6 +549,14 @@ def run_translate(
                         name_translations_map.update(new_translations)
                         name_translations_in_flight.difference_update(names_we_translate.keys())
                         name_translations_cond.notify_all()
+                        map_snapshot = dict(name_translations_map) if new_translations else None
+                    # Persist outside the lock so other workers don't block on disk I/O.
+                    # Only writes when we actually produced new translations.
+                    if map_snapshot is not None:
+                        try:
+                            _save_namebox_map(namebox_csv, map_snapshot)
+                        except Exception as exc:
+                            _log(options, f"WARN: could not persist namebox map: {exc}")
 
             # Wait for translations claimed by other workers so this batch's glossary is complete.
             # Use a short timeout + stop-check so a pressed Stop button can unblock us.
@@ -590,9 +591,11 @@ def run_translate(
             provider.set_glossary(batch_glossary)
         try:
             batch_results = translate_batch_with_retry(batch_provider, batch, options.target_lang, options.source_lang, options, report, report_lock)
+        except StoppedByUser:
+            raise
         except Exception as exc:
             if _stopped(options):
-                raise RuntimeError(STOPPED) from exc
+                raise StoppedByUser() from exc
             with report_lock:
                 report.batches_failed += 1
             if _is_content_refusal(exc):
@@ -683,13 +686,11 @@ def run_translate(
                         break
                     try:
                         future.result()
-                    except RuntimeError as exc:
-                        if _is_stopped_error(exc):
-                            user_stopped = True
-                            for pending in futures:
-                                pending.cancel()
-                            break
-                        raise
+                    except StoppedByUser:
+                        user_stopped = True
+                        for pending in futures:
+                            pending.cancel()
+                        break
                 if user_stopped or _stopped(options):
                     _raise_if_stopped(options)
             finally:
@@ -720,9 +721,9 @@ def run_translate(
                         results.extend(deduped)
                         save_results(results, translations_csv)
                     _log(options, f"Recovered {len(expanded)} entries")
+                except StoppedByUser:
+                    raise
                 except Exception as exc:
-                    if _is_stopped_error(exc):
-                        raise
                     if _is_content_refusal(exc):
                         _log(options, f"WARN: LLM refused sub-batch {len(sub)} entries (content filter, fallback to source)")
                         _record_source_fallback(sub)
@@ -740,10 +741,8 @@ def run_translate(
             for batch in failed_batches:
                 _raise_if_stopped(options)
                 retry_sub(batch)
-    except RuntimeError as exc:
-        if _is_stopped_error(exc):
-            _log(options, "Translation stopped by user.")
-            raise
+    except StoppedByUser:
+        _log(options, "Translation stopped by user.")
         raise
 
     if _stopped(options):

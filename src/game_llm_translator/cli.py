@@ -270,6 +270,7 @@ def validate(
     translations_csv: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False),
     output: Path | None = typer.Option(None, "--out", "-o", help="Optional JSON report path. If omitted, prints summary to stdout."),
     strict: bool = typer.Option(False, "--strict", help="Exit non-zero if any warnings or noun inconsistencies are found."),
+    glossary: Path | None = typer.Option(None, "--glossary", help="Also lint a glossary CSV for duplicate/blank/case-conflict terms."),
 ):
     """Validate a translations CSV without re-running the LLM pipeline.
 
@@ -281,6 +282,9 @@ def validate(
     import json
     from collections import Counter
     from .validate import translation_warnings, check_noun_consistency
+    from .glossary import validate_glossary
+
+    glossary_warnings = validate_glossary(glossary) if glossary else []
 
     results = load_results(translations_csv)
     if not results:
@@ -325,6 +329,10 @@ def validate(
             for src, variants in inconsistencies[:30]
         ],
         "rows_with_warnings": rows_with_warnings[:200],
+        "glossary": {
+            "path": str(glossary) if glossary else None,
+            "warnings": glossary_warnings,
+        },
     }
 
     if output:
@@ -338,8 +346,12 @@ def validate(
         console.print(f"Noun inconsistencies: {len(inconsistencies)}")
         for src, variants in inconsistencies[:5]:
             console.print(f"  '{src}' -> {variants[:5]}")
+        if glossary:
+            console.print(f"Glossary warnings: {len(glossary_warnings)}")
+            for w in glossary_warnings[:10]:
+                console.print(f"  {w}")
 
-    if strict and (warning_counter or inconsistencies or fallback_count):
+    if strict and (warning_counter or inconsistencies or fallback_count or glossary_warnings):
         raise typer.Exit(code=2)
 
 

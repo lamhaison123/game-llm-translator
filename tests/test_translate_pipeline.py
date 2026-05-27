@@ -631,3 +631,78 @@ def test_should_split_on_error_recognizes_truncate_and_524():
     assert _should_split_on_error(ValueError("LLM response was not valid JSON: ..."))
     assert not _should_split_on_error(RuntimeError("429 rate limit"))
     assert not _should_split_on_error(RuntimeError("connection refused"))
+
+
+def test_stopped_by_user_is_runtime_error_with_matching_str():
+    """StoppedByUser must remain a RuntimeError subclass so legacy GUI code
+    that catches RuntimeError + checks str(exc) == "Stopped by user" keeps
+    working."""
+    from game_llm_translator.errors import STOPPED, StoppedByUser
+    exc = StoppedByUser()
+    assert isinstance(exc, RuntimeError)
+    assert str(exc) == STOPPED == "Stopped by user"
+
+
+def test_namebox_map_persisted_after_per_batch_translation(tmp_path):
+    """When the pre-pass is bypassed (e.g. dedupe causes a batch's namebox name
+    to appear only after pre-pass finishes), the per-batch translation path must
+    still persist the .namebox.csv so resume runs see those names. Previously
+    only the pre-pass and run_translate's final block wrote the file, so a
+    mid-run crash lost everything per-batch produced."""
+    entries = [
+        TextEntry(Path("a.json"), "$.k0", "\\n<健太>「a」"),
+    ]
+    out = tmp_path / "translations.csv"
+
+    import game_llm_translator.translate_pipeline as tp
+
+    prepass_calls = 0
+    per_batch_calls = 0
+
+    def fake_translate_namebox_names(_provider, names, _target, _source):
+        nonlocal prepass_calls, per_batch_calls
+        # First call is pre-pass; simulate that it fails so per-batch path runs.
+        if prepass_calls == 0:
+            prepass_calls += 1
+            raise RuntimeError("simulated pre-pass failure")
+        per_batch_calls += 1
+        return {n: "Kenta" for n in names.keys()}
+
+    options = TranslateOptions(
+        target_lang="Vietnamese", provider="google", model="google",
+        batch_size=2, workers=1, use_memory=False, save_memory=False,
+    )
+
+    namebox_csv = tmp_path / "translations.namebox.csv"
+    seen_after_per_batch = {"exists": False, "content": ""}
+
+    # Sniff the file system state as soon as per-batch translation lands so we
+    # know the persist call ran on the per-batch path, not the end-of-run path.
+    real_save = tp._save_namebox_map
+
+    def sniffing_save(path, mapping):
+        real_save(path, mapping)
+        if per_batch_calls > 0 and path == namebox_csv:
+            seen_after_per_batch["exists"] = path.exists()
+            seen_after_per_batch["content"] = path.read_text(encoding="utf-8")
+
+    original_make = tp._make_provider
+    original_translate = tp.translate_namebox_names
+    original_save = tp._save_namebox_map
+
+    tp._make_provider = lambda _o, _g="": _MockProvider([lambda s: f"VI:{s}"])
+    tp.translate_namebox_names = fake_translate_namebox_names
+    tp._save_namebox_map = sniffing_save
+    try:
+        run_translate(entries, out, options)
+    finally:
+        tp._make_provider = original_make
+        tp.translate_namebox_names = original_translate
+        tp._save_namebox_map = original_save
+
+    assert prepass_calls == 1
+    assert per_batch_calls == 1
+    assert seen_after_per_batch["exists"], (
+        "namebox.csv must be persisted from inside per-batch path, not only at end of run"
+    )
+    assert "Kenta" in seen_after_per_batch["content"]
