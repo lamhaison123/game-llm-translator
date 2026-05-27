@@ -9,13 +9,17 @@
 
 ## Architecture
 
-- `cli.py`: Typer CLI.
-- `translate_pipeline.py`: Shared translate loop (retry, memory, dedup, glossary).
-- `rpg_maker.py`: RPG Maker JSON extraction/apply.
-- `unity.py`: Unity text candidate extraction.
+- `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit, diff, retry, validate).
+- `translate_pipeline.py`: Shared translate loop (retry, memory, dedup, glossary, namebox pre-pass + persist).
+- `rpg_maker.py`: Facade re-exporting `rpg_maker_common` / `_mv` / `_mz` extract+apply.
+- `unity.py`: Unity text candidate extraction (legacy).
 - `xunity.py`: XUnity AutoTranslator TXT extract/apply.
-- `llm.py`: Anthropic/OpenAI/MTL providers.
-- `csv_store.py`: CSV checkpoint format.
+- `llm.py`: Anthropic/OpenAI/MTL providers + namebox name translation.
+- `prompts.py`: Pure-data language rules + system prompt builder (no SDK imports).
+- `glossary.py`: Glossary loader, prompt formatter, and `validate_glossary` linter.
+- `diff_tool.py`: Carry-forward diff between extracts.
+- `errors.py`: `StoppedByUser` exception for mid-pipeline cancel.
+- `csv_store.py`: CSV checkpoint format (atomic writes).
 - `gui.py`: PySide6 desktop UI.
 
 ## Notes

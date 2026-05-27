@@ -11,8 +11,10 @@ __pycache__/
 htmlcov/
 build/
 build-linux/
+build-latest/
 dist/
 dist-linux/
+dist-latest/
 *.spec
 *.egg-info/
 work/
@@ -20,3 +22,14 @@ translator_work/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local tool / agent state
+.kilo/
+.memsearch/
+.understand-anything/
+.understand-thing/
+
+# Release artifacts (uploaded to GitHub Releases, not the repo)
+game-translator-gui-*.zip
+game-translator-gui-*.tar.gz
+

@@ -15,10 +15,10 @@ Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs 
 - **Placeholder checks**: warns when RPG control codes (`\\V[1]`, `%1`, etc.) are missing from translations
 - **Translation memory**: per-game and global memory, file-locked to avoid corruption during parallel writes
 - **Atomic CSV writes**: temporary file + `os.replace`, safe against crashes during save
-- **Glossary CSV**: inject fixed terms into the LLM system prompt (GUI or `--glossary` on CLI)
+- **Glossary CSV**: inject fixed terms into the LLM system prompt (GUI or `--glossary` on CLI); `validate --glossary` lints for duplicates, blank translations, and case conflicts
 - **Correction table CSV**: post-translation find/replace rules applied after each batch (GUI or `--correction-table` on CLI)
+- **Namebox preservation & persistence**: auto-restores YEP_MessageCore `\n<Name>` prefixes; speaker names are translated once in a pre-pass and stored in `translations.namebox.csv` so resume runs don't re-spend tokens
 - **Token formatting fix**: auto-repairs LLM-introduced spaces in RPG Maker tokens (`\N [1]` → `\N[1]`, `% 1` → `%1`)
-- **Namebox preservation**: auto-restores YEP_MessageCore `\n<Name>` prefixes that LLMs sometimes drop
 - **Dynamic batching by character length**: limits batch size by total characters (`max_chars`) to prevent token overflow on long entries
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
 - **15-language prompt system**: detailed language-specific rules for Vietnamese, Japanese, Chinese, Korean, English, Thai, Indonesian, Portuguese, Russian, French, German, Spanish, Italian, Polish, Turkish, and Arabic — with pronoun maps, honorific handling, onomatopoeia, punctuation conversion, and name transliteration
@@ -112,6 +112,23 @@ game-translator apply rpg-maker work/translations.csv --out-dir work/translated_
 
 # Or run the full RPG Maker pipeline
 game-translator pipeline rpg-maker "D:/Games/MyRPG" --work-dir work --target Vietnamese
+```
+
+Post-translation utilities:
+
+```bash
+# Lint a translations CSV (placeholder mismatches, fallback %, noun inconsistencies,
+# untranslated namebox names). Optionally lint a glossary file too.
+game-translator validate work/translations.csv --glossary terms.csv --strict
+
+# Re-translate a subset of rows in place (fallback rows, empty targets, or a
+# specific context). Useful after tweaking the glossary or correction table.
+game-translator retry work/translations.csv --filter fallback --target Vietnamese
+
+# Carry forward translations to a re-extracted texts.csv (e.g. after a game
+# patch). Produces a translations-shaped CSV with new/changed/removed audited.
+game-translator diff work/texts_old.csv work/texts_new.csv work/translations.csv \
+  -o work/translations_carry.csv
 ```
 
 For Unity XUnity, use `game-translator auto` or the GUI to extract/apply `Translation/{Lang}/Text/*.txt` directly. The legacy `extract unity` command only scans CSV/TSV/JSON/TXT candidates for manual CSV export.
@@ -238,7 +255,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-216 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, correction table, token formatting, dynamic batching, translation pipeline, and fan-out dedup. 284 tests total including PKD_PhoneMenu extraction, MZ control codes, thread-safe glossary, and prompt context hints.
+216 tests cover RPG Maker + Unity extract/apply, cheat plugin, atomic writes, concurrent memory save, glossary, correction table, token formatting, dynamic batching, translation pipeline, and fan-out dedup. 381 tests total including PKD_PhoneMenu extraction, MZ control codes, thread-safe glossary, prompt context hints, namebox race dedup + per-batch persist, prompt cache split, partial-LLM truncation, glossary linting, and diff/retry/validate commands.
 
 ## Build executable
 
@@ -318,16 +335,20 @@ Output: `dist/game-translator-gui.app`.
 
 ## Architecture
 
-- `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit)
+- `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit, diff, retry, validate)
 - `gui.py`: PySide6 (Qt6) GUI — QMainWindow + QTabWidget + custom dark/light palette
 - `auto.py`: automatic workflow for RPG Maker + Unity
 - `rpg_maker_common.py` / `rpg_maker_mv.py` / `rpg_maker_mz.py`: MV/MZ extract + apply
 - `rpg_maker_cheat.py`: install/uninstall Cheat UI Plugin
 - `xunity.py`: extract + apply Unity XUnity AutoTranslator format
-- `llm.py`: providers (Anthropic, OpenAI, MTL); language-aware system prompt with 15-language rules; glossary injection
+- `translate_pipeline.py`: shared retry/dedup/memory/glossary loop used by CLI, `auto`, and GUI; namebox pre-pass + per-batch persistence
+- `llm.py`: providers (Anthropic, OpenAI, MTL); glossary injection; namebox name translation
+- `prompts.py`: pure-data language rules (no SDK imports) — system prompt builder split into stable + glossary blocks for Anthropic prompt caching
+- `errors.py`: `StoppedByUser` exception used to cancel mid-pipeline
+- `diff_tool.py`: carry-forward diff between two extracted CSVs against an existing translations.csv
 - `csv_store.py`: atomic CSV save/load
 - `translation_memory.py`: filelock + atomic memory store
-- `glossary.py`: CSV glossary loader + prompt formatter
+- `glossary.py`: CSV glossary loader, prompt formatter, and `validate_glossary` linter
 - `editor.py`: cross-platform file editor
 - `unity.py`: extract Unity CSV/JSON candidates (legacy, CLI only — use `xunity.py` instead)
 

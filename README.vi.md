@@ -15,7 +15,8 @@ Tool dịch text game RPG Maker MV/MZ và Unity (XUnity AutoTranslator) bằng L
 - **Kiểm tra placeholder**: cảnh báo khi thiếu mã RPG (`\\V[1]`, `%1`, …) trong bản dịch
 - **Translation memory**: per-game + global, file-locked để tránh corrupt khi parallel write
 - **Atomic CSV writes**: tmp file + `os.replace`, an toàn khi crash giữa lúc save
-- **Glossary CSV**: term cố định trong system prompt (GUI hoặc `--glossary` trên CLI)
+- **Glossary CSV**: term cố định trong system prompt (GUI hoặc `--glossary` trên CLI); `validate --glossary` lint tìm trùng term, translation trống, conflict hoa-thường
+- **Namebox preservation + persist**: tự khôi phục prefix `\n<Name>` của YEP_MessageCore; tên speaker được dịch 1 lần ở pre-pass và lưu sang `translations.namebox.csv` để resume không tốn token dịch lại
 - **Multi-provider**: Anthropic Claude, OpenAI/OpenAI-compatible (OpenRouter, LM Studio, Ollama), Google MTL, MyMemory, LibreTranslate, Microsoft, Yandex
 - **Cheat plugin**: cài/gỡ RPG Maker MV/MZ Cheat UI Plugin (ưu tiên cache/optional bundled archive, fallback GitHub release)
 - **GUI desktop** (PySide6 / Qt6):
@@ -108,6 +109,23 @@ game-translator apply rpg-maker work/translations.csv --out-dir work/translated_
 game-translator pipeline rpg-maker "D:/Games/MyRPG" --work-dir work --target Vietnamese
 ```
 
+Tiện ích hậu kỳ:
+
+```bash
+# Lint translations CSV (placeholder mismatch, fallback %, noun inconsistency,
+# namebox CJK chưa dịch). Có thể lint thêm file glossary.
+game-translator validate work/translations.csv --glossary terms.csv --strict
+
+# Dịch lại 1 subset rows tại chỗ (fallback rows, target rỗng, hoặc 1 context cụ thể).
+# Hữu ích sau khi chỉnh glossary / correction table.
+game-translator retry work/translations.csv --filter fallback --target Vietnamese
+
+# Mang bản dịch sang file texts.csv mới extract (vd: sau khi game patch).
+# Output là 1 translations CSV có cột status: new/changed/unchanged/removed.
+game-translator diff work/texts_old.csv work/texts_new.csv work/translations.csv \
+  -o work/translations_carry.csv
+```
+
 Với Unity XUnity, dùng `game-translator auto` hoặc GUI để extract/apply trực tiếp `Translation/{Lang}/Text/*.txt`. Lệnh `extract unity` legacy chỉ quét CSV/TSV/JSON/TXT để export CSV thủ công.
 
 ## Glossary
@@ -122,7 +140,7 @@ HP,HP,keep as-is
 ```
 
 Trong GUI: tab Translate → Advanced → Glossary CSV → Browse.
-CLI hiện chưa có option glossary riêng; dùng GUI nếu cần glossary.
+CLI: `--glossary terms.csv` (hoặc `validate --glossary` để lint file glossary).
 
 Mỗi batch sẽ inject glossary vào system prompt; LLM bắt buộc dịch đúng term.
 
@@ -216,7 +234,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-143 tests bao quát extract/apply RPG Maker + Unity, cheat plugin, atomic write, concurrent memory save, glossary, translate pipeline, fan-out dedup.
+143 tests bao quát extract/apply RPG Maker + Unity, cheat plugin, atomic write, concurrent memory save, glossary, translate pipeline, fan-out dedup. 381 tests tổng cộng — thêm PKD_PhoneMenu, MZ control codes, namebox race dedup + per-batch persist, prompt cache split, partial-LLM truncation, glossary linting, và các lệnh diff/retry/validate.
 
 ## Build executable
 
@@ -296,16 +314,20 @@ Output: `dist/game-translator-gui.app`.
 
 ## Architecture
 
-- `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit)
+- `cli.py`: Typer CLI (auto, scan, extract, translate, apply, pipeline, edit, diff, retry, validate)
 - `gui.py`: PySide6 (Qt6) GUI — QMainWindow + QTabWidget + custom dark/light palette
 - `auto.py`: workflow auto cho RPG Maker + Unity
 - `rpg_maker_common.py` / `rpg_maker_mv.py` / `rpg_maker_mz.py`: extract + apply MV/MZ
 - `rpg_maker_cheat.py`: cài/gỡ Cheat UI Plugin
 - `xunity.py`: extract + apply Unity XUnity AutoTranslator format
-- `llm.py`: providers (Anthropic, OpenAI, MTL); language-aware system prompt; glossary injection
+- `translate_pipeline.py`: retry/dedup/memory/glossary loop dùng chung cho CLI, `auto`, GUI; namebox pre-pass + per-batch persist
+- `llm.py`: providers (Anthropic, OpenAI, MTL); glossary injection; dịch tên namebox
+- `prompts.py`: rule ngôn ngữ thuần data (không import SDK) — system prompt chia thành block stable + glossary cho Anthropic prompt caching
+- `errors.py`: `StoppedByUser` exception để cancel giữa pipeline
+- `diff_tool.py`: carry-forward diff giữa 2 file texts.csv extract với translations.csv hiện có
 - `csv_store.py`: atomic CSV save/load
 - `translation_memory.py`: filelock + atomic memory store
-- `glossary.py`: CSV glossary loader + prompt formatter
+- `glossary.py`: CSV glossary loader, prompt formatter, và `validate_glossary` linter
 - `editor.py`: file editor cross-platform
 - `unity.py`: extract Unity CSV/JSON candidates (legacy, CLI only — dùng `xunity.py` thay thế)
 
