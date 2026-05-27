@@ -80,11 +80,36 @@ def _namebox_bracket_span(text: str) -> tuple[int, int] | None:
     return (start, end)
 
 
+def is_cjk_leak(target: str) -> bool:
+    """True if target still contains CJK/Hiragana/Katakana/Hangul characters.
+
+    Strict: a single CJK char flags the row. Glossary entries that intentionally
+    keep CJK (e.g. 勇者 as a proper noun) will false-positive — by design, since
+    body text containing CJK is almost always a partial LLM translation.
+    """
+    return bool(_CJK_RE.search(target))
+
+
+def needs_retry(source: str, target: str) -> bool:
+    """True if a row should be flagged for bulk re-translation.
+
+    Covers three cases: empty target, fallback (target==source non-empty),
+    and partial LLM output that still contains CJK characters.
+    """
+    if not target.strip():
+        return True
+    if target == source:
+        return True
+    return is_cjk_leak(target)
+
+
 def translation_warnings(source: str, target: str, context: str = "") -> list[str]:
     """Return non-fatal quality warnings for a source/target pair."""
     if not target.strip() or target == source:
         return []
     warnings: list[str] = []
+    if is_cjk_leak(target):
+        warnings.append("target contains CJK characters (possible partial translation)")
     # Identify the namebox <...> span in source so we skip it as a placeholder check.
     # Namebox names are expected to change during translation, so a mismatch is not
     # a "missing placeholder" — it's covered by the dedicated namebox checks below.

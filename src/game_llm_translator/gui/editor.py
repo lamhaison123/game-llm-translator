@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from ..validate import is_cjk_leak, needs_retry
+
 
 class TranslationEditor(QDialog):
     def __init__(self, parent, path: Path) -> None:
@@ -32,6 +34,7 @@ class TranslationEditor(QDialog):
         self.rows: list[dict[str, str]] = []
         self.filtered_indices: list[int] = []
         self.current_index: int | None = None
+        self.retry_requested: bool = False
 
         self._build()
         self._load()
@@ -43,7 +46,13 @@ class TranslationEditor(QDialog):
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Filter:"))
         self.filter_group = QButtonGroup(self)
-        for label, value in [("All", "all"), ("Untranslated/Fallback", "fallback"), ("Translated", "translated")]:
+        for label, value in [
+            ("All", "all"),
+            ("Untranslated/Fallback", "fallback"),
+            ("CJK leak", "cjk_leak"),
+            ("Needs retry", "needs_retry"),
+            ("Translated", "translated"),
+        ]:
             rb = QRadioButton(label)
             rb.setProperty("filter_value", value)
             if value == "all":
@@ -97,6 +106,10 @@ class TranslationEditor(QDialog):
         copy_src = QPushButton("Use Source as Translation")
         copy_src.clicked.connect(self._copy_source)
         btns.addWidget(copy_src)
+        retry_btn = QPushButton("Save && Retry flagged rows")
+        retry_btn.setToolTip("Save CSV then re-translate fallback + CJK-leak rows using current Translate tab settings.")
+        retry_btn.clicked.connect(self._retry_flagged)
+        btns.addWidget(retry_btn)
         btns.addStretch()
         close = QPushButton("Close")
         close.clicked.connect(self.close)
@@ -117,6 +130,16 @@ class TranslationEditor(QDialog):
         tgt = row.get("target", "").strip()
         return not tgt or tgt == src
 
+    def _has_cjk_leak(self, row: dict[str, str]) -> bool:
+        src = row.get("source", "")
+        tgt = row.get("target", "")
+        if not tgt.strip() or tgt == src:
+            return False
+        return is_cjk_leak(tgt)
+
+    def _needs_retry(self, row: dict[str, str]) -> bool:
+        return needs_retry(row.get("source", ""), row.get("target", ""))
+
     def _apply_filter(self) -> None:
         self._save_current(update_tree=False)
         mode = "all"
@@ -130,20 +153,33 @@ class TranslationEditor(QDialog):
         for i, row in enumerate(self.rows):
             if mode == "fallback" and not self._is_fallback(row):
                 continue
+            if mode == "cjk_leak" and not self._has_cjk_leak(row):
+                continue
+            if mode == "needs_retry" and not self._needs_retry(row):
+                continue
             if mode == "translated" and self._is_fallback(row):
                 continue
             if search and search not in (row.get("source", "") + row.get("target", "") + row.get("key", "")).lower():
                 continue
             item = QTreeWidgetItem([str(i), row.get("file", ""), row.get("key", ""), row.get("source", ""), row.get("target", "")])
             item.setData(0, Qt.ItemDataRole.UserRole, i)
-            if self._is_fallback(row):
+            color = self._row_color(row)
+            if color is not None:
                 for col in range(5):
-                    item.setForeground(col, QColor(204, 68, 0))
+                    item.setForeground(col, color)
             self.tree.addTopLevelItem(item)
             self.filtered_indices.append(i)
         fb = sum(1 for r in self.rows if self._is_fallback(r))
-        self.count_label.setText(f"Showing {len(self.filtered_indices)}/{len(self.rows)} | Fallback: {fb}")
+        leak = sum(1 for r in self.rows if self._has_cjk_leak(r))
+        self.count_label.setText(f"Showing {len(self.filtered_indices)}/{len(self.rows)} | Fallback: {fb} | CJK leak: {leak}")
         self.current_index = None
+
+    def _row_color(self, row: dict[str, str]) -> QColor | None:
+        if self._is_fallback(row):
+            return QColor(204, 68, 0)  # orange — fallback/empty
+        if self._has_cjk_leak(row):
+            return QColor(176, 0, 32)  # red — partial CJK leak
+        return None
 
     def _on_select(self) -> None:
         items = self.tree.selectedItems()
@@ -166,7 +202,7 @@ class TranslationEditor(QDialog):
                 it = self.tree.topLevelItem(i)
                 if it is not None and int(it.data(0, Qt.ItemDataRole.UserRole)) == self.current_index:
                     it.setText(4, row["target"])
-                    color = QColor(204, 68, 0) if self._is_fallback(row) else self.tree.palette().text().color()
+                    color = self._row_color(row) or self.tree.palette().text().color()
                     for c in range(5):
                         it.setForeground(c, color)
                     break
@@ -176,6 +212,10 @@ class TranslationEditor(QDialog):
         self._save_current(update_tree=True)
 
     def _save_file(self) -> None:
+        self._save_to_disk()
+        QMessageBox.information(self, "Save CSV", f"Saved {self.path}")
+
+    def _save_to_disk(self) -> None:
         self._save_current(update_tree=True)
         fieldnames = ["file", "key", "source", "target", "context", "sub_keys"]
         with self.path.open("w", newline="", encoding="utf-8") as fp:
@@ -183,4 +223,21 @@ class TranslationEditor(QDialog):
             w.writeheader()
             for row in self.rows:
                 w.writerow({n: row.get(n, "") for n in fieldnames})
-        QMessageBox.information(self, "Save CSV", f"Saved {self.path}")
+
+    def _retry_flagged(self) -> None:
+        self._save_current(update_tree=True)
+        flagged = sum(1 for r in self.rows if self._needs_retry(r))
+        if flagged == 0:
+            QMessageBox.information(self, "Retry flagged", "No fallback or CJK-leak rows to retry.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Retry flagged rows",
+            f"Save and re-translate {flagged} flagged row(s) using current Translate tab settings?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._save_to_disk()
+        self.retry_requested = True
+        self.accept()

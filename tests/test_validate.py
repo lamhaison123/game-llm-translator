@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from game_llm_translator.models import TranslationResult
-from game_llm_translator.validate import check_noun_consistency, format_noun_warnings, translation_warnings
+from game_llm_translator.validate import (
+    check_noun_consistency,
+    format_noun_warnings,
+    is_cjk_leak,
+    needs_retry,
+    translation_warnings,
+)
 from pathlib import Path
 
 
@@ -123,3 +129,54 @@ def test_translation_warnings_state_description_too_long():
 def test_translation_warnings_system_title_overflow():
     issues = translation_warnings("短い", "An extremely long game title that would overflow the title screen", context="rpg_maker_system_gameTitle")
     assert any("name/UI label too long" in i for i in issues)
+
+
+def test_is_cjk_leak_detects_kanji():
+    assert is_cjk_leak("Dũng giả 勇者 đến rồi")
+
+
+def test_is_cjk_leak_detects_hiragana():
+    assert is_cjk_leak("Xin chào こんにちは")
+
+
+def test_is_cjk_leak_detects_katakana():
+    assert is_cjk_leak("Bình ポーション")
+
+
+def test_is_cjk_leak_detects_hangul():
+    assert is_cjk_leak("안녕 hello")
+
+
+def test_is_cjk_leak_clean_vietnamese():
+    assert not is_cjk_leak("Xin chào, đây là bản dịch sạch")
+
+
+def test_is_cjk_leak_empty():
+    assert not is_cjk_leak("")
+
+
+def test_needs_retry_empty_target():
+    assert needs_retry("こんにちは", "")
+    assert needs_retry("こんにちは", "   ")
+
+
+def test_needs_retry_fallback():
+    assert needs_retry("Hello", "Hello")
+
+
+def test_needs_retry_cjk_leak():
+    assert needs_retry("こんにちは", "Xin chào こんにちは")
+
+
+def test_needs_retry_clean_translation():
+    assert not needs_retry("こんにちは", "Xin chào")
+
+
+def test_translation_warnings_flags_cjk_leak():
+    issues = translation_warnings("勇者が来た", "Dũng giả 勇者 đến", context="rpg_maker_event_text")
+    assert any("CJK characters" in i for i in issues)
+
+
+def test_translation_warnings_clean_no_cjk_warning():
+    issues = translation_warnings("勇者が来た", "Dũng giả đến", context="rpg_maker_event_text")
+    assert not any("CJK characters" in i for i in issues)

@@ -209,7 +209,7 @@ def retry(
     correction_table: Path | None = typer.Option(None, "--correction-table"),
     batch_size: int = typer.Option(30, "--batch-size"),
     workers: int = typer.Option(1, "--workers", min=1, max=8),
-    filter_kind: str = typer.Option("fallback", "--filter", help="Which rows to retry: 'fallback' (target==source), 'empty' (target==''), 'context=<value>' (rows whose context matches), or 'all'."),
+    filter_kind: str = typer.Option("fallback", "--filter", help="Which rows to retry: 'fallback' (target==source), 'empty' (target==''), 'cjk-leak' (target contains CJK), 'needs-retry' (empty OR fallback OR cjk-leak), 'context=<value>', or 'all'."),
 ):
     """Re-translate selected rows from an existing translations CSV.
 
@@ -218,6 +218,8 @@ def retry(
     than --restart when only a subset of rows need re-translation, e.g. after
     a 502 burst left a few dozen fallback rows.
     """
+    from .validate import is_cjk_leak, needs_retry
+
     existing = load_results(translations_csv)
     if not existing:
         console.print(f"[red]{translations_csv}[/red] is empty or unreadable.")
@@ -230,6 +232,10 @@ def retry(
             return r.target.strip() != "" and r.target == r.source
         if filter_kind == "empty":
             return r.target.strip() == ""
+        if filter_kind == "cjk-leak":
+            return r.target.strip() != "" and r.target != r.source and is_cjk_leak(r.target)
+        if filter_kind == "needs-retry":
+            return needs_retry(r.source, r.target)
         if filter_kind.startswith("context="):
             wanted = filter_kind.split("=", 1)[1]
             return r.context == wanted

@@ -40,6 +40,8 @@ class ReviewTabMixin:
             return
         dlg = TranslationEditor(self, path)
         dlg.exec()
+        if getattr(dlg, "retry_requested", False):
+            self.retry_flagged_rows()
 
     def edit_csv(self) -> None:
         path = Path(self.translations_csv_edit.text())

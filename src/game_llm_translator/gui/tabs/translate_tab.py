@@ -18,16 +18,18 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from ...auto import auto_translate_game
-from ...csv_store import save_entries
+from ...csv_store import load_results, save_entries, save_results
 from ...models import TextEntry, TranslationResult, text_identity
 from ...rpg_maker import apply_rpg_maker, normalize_gui_game_type, extract_rpg_maker_mv, extract_rpg_maker_mz
 from ...translate_pipeline import TranslateOptions, run_translate
+from ...validate import needs_retry
 from ...xunity import apply_xunity, extract_xunity
 
 
@@ -70,6 +72,7 @@ class TranslateTabMixin:
         actions = QHBoxLayout()
         actions.addWidget(self._action_button("Auto-translate (extract + translate + export)", self.auto_translate))
         actions.addWidget(self._action_button("Extract + Translate + Export Copy", self.pipeline))
+        actions.addWidget(self._action_button("Retry flagged rows (fallback + CJK leak)", self.retry_flagged_rows))
         actions.addStretch()
         outer.addLayout(actions)
 
@@ -232,3 +235,47 @@ class TranslateTabMixin:
                 apply_rpg_maker(results, out_dir)
             self._log(f"Exported -> {out_dir}")
         self._run("extract translate export", job)
+
+    def retry_flagged_rows(self) -> None:
+        """Clear targets of fallback + CJK-leak rows in translations CSV, then re-run translate."""
+        translations_csv = Path(self.translations_csv_edit.text())
+        if not translations_csv.exists():
+            QMessageBox.warning(self, "Retry flagged", f"File not found: {translations_csv}")
+            return
+        existing = load_results(translations_csv)
+        if not existing:
+            QMessageBox.warning(self, "Retry flagged", f"{translations_csv} is empty.")
+            return
+        flagged_ids = {
+            text_identity(r.file, r.key)
+            for r in existing
+            if needs_retry(r.source, r.target)
+        }
+        if not flagged_ids:
+            QMessageBox.information(self, "Retry flagged", "No fallback or CJK-leak rows found.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Retry flagged rows",
+            f"Re-translate {len(flagged_ids)} flagged row(s) in {translations_csv.name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        def job() -> None:
+            rows = load_results(translations_csv)
+            rewritten: list[TranslationResult] = []
+            cleared = 0
+            for r in rows:
+                if text_identity(r.file, r.key) in flagged_ids:
+                    rewritten.append(TranslationResult(r.file, r.key, r.source, "", r.context, sub_keys=r.sub_keys))
+                    cleared += 1
+                else:
+                    rewritten.append(r)
+            save_results(rewritten, translations_csv)
+            self._log(f"Cleared {cleared} flagged row(s) — re-running translate pipeline.")
+            entries = [TextEntry(r.file, r.key, r.source, r.context, "") for r in rewritten]
+            self._translate_entries(entries, translations_csv)
+            self._log(f"Retry done -> {translations_csv}")
+        self._run("retry flagged rows", job)
