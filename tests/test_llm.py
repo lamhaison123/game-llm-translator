@@ -890,6 +890,27 @@ def test_build_system_blocks_empty_glossary_returns_empty_string():
     assert stable  # still non-empty (BASE+lang rules)
 
 
+def test_prompts_module_is_sdk_free():
+    """prompts.py must NOT import anthropic/openai/requests so it can be imported
+    in environments without LLM SDKs (e.g. lightweight CI for prompt linting,
+    documentation generators). This is the contract that justified the split.
+    """
+    src = (Path(__file__).parent.parent / "src" / "game_llm_translator" / "prompts.py").read_text(encoding="utf-8")
+    for forbidden in ("import anthropic", "from anthropic", "import openai", "from openai", "import requests"):
+        assert forbidden not in src, f"prompts.py must not depend on LLM SDKs (found: {forbidden!r})"
+
+
+def test_prompts_reexport_via_llm_keeps_compatibility():
+    """Existing imports `from game_llm_translator.llm import _build_system_blocks`
+    must continue to work after the split, and must point at the same objects
+    that live in prompts.py (so monkey-patching one side affects the other)."""
+    from game_llm_translator import llm, prompts
+    assert llm._build_system_blocks is prompts._build_system_blocks
+    assert llm.SYSTEM_PROMPT_BASE is prompts.SYSTEM_PROMPT_BASE
+    assert llm.LANG_CODES is prompts.LANG_CODES
+    assert llm._lang_code is prompts._lang_code
+
+
 def test_replace_untranslated_namebox_names_skips_fallback_entries():
     """Fallback entries (target == source) must NOT have their namebox name partially
     replaced — that would create a misleading 'name translated, dialogue untranslated'
