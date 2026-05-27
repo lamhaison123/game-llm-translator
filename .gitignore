@@ -28,6 +28,7 @@ Thumbs.db
 .memsearch/
 .understand-anything/
 .understand-thing/
+docs/superpowers/
 
 # Release artifacts (uploaded to GitHub Releases, not the repo)
 game-translator-gui-*.zip
