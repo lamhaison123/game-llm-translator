@@ -31,6 +31,7 @@ from ...rpg_maker import apply_rpg_maker, normalize_gui_game_type, extract_rpg_m
 from ...translate_pipeline import TranslateOptions, run_translate
 from ...validate import needs_retry
 from ...xunity import apply_xunity, extract_xunity
+from ..paths import normalize_path_text
 
 
 class TranslateTabMixin:
@@ -89,10 +90,10 @@ class TranslateTabMixin:
         self.workers_spin.setValue(int(self.config.get("workers", 1)))
         adv.addRow("Workers (parallel)", self.workers_spin)
 
-        self.glossary_path_edit = QLineEdit(str(self.config.get("glossary_path", "")))
+        self.glossary_path_edit = QLineEdit(normalize_path_text(str(self.config.get("glossary_path", ""))))
         adv.addRow("Glossary CSV (optional)", self._path_picker(self.glossary_path_edit, self._choose_glossary))
 
-        self.correction_table_path_edit = QLineEdit(str(self.config.get("correction_table_path", "")))
+        self.correction_table_path_edit = QLineEdit(normalize_path_text(str(self.config.get("correction_table_path", ""))))
         adv.addRow("Correction table CSV (optional)", self._path_picker(self.correction_table_path_edit, self._choose_correction_table))
 
         self.restart_check = QCheckBox("Ignore existing translations and start over")
@@ -121,12 +122,12 @@ class TranslateTabMixin:
     def _choose_glossary(self) -> None:
         value, _ = QFileDialog.getOpenFileName(self, "Select glossary CSV", self.glossary_path_edit.text(), "CSV files (*.csv);;All files (*)")
         if value:
-            self.glossary_path_edit.setText(value)
+            self.glossary_path_edit.setText(normalize_path_text(value))
 
     def _choose_correction_table(self) -> None:
         value, _ = QFileDialog.getOpenFileName(self, "Select correction table CSV", self.correction_table_path_edit.text(), "CSV files (*.csv);;All files (*)")
         if value:
-            self.correction_table_path_edit.setText(value)
+            self.correction_table_path_edit.setText(normalize_path_text(value))
 
     def _extract_entries(self) -> list:
         game_dir = self._game_dir_path()

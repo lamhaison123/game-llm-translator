@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ...auto import analyze_game, write_analysis_report
 from ...rpg_maker import engine_to_gui_game_type, normalize_gui_game_type
+from ..paths import normalize_path_text
 
 
 class GameTabMixin:
@@ -51,7 +52,7 @@ class GameTabMixin:
         form = QFormLayout()
         outer.addLayout(form)
 
-        self.game_dir_edit = QLineEdit(str(self.config.get("game_dir", "")))
+        self.game_dir_edit = QLineEdit(normalize_path_text(str(self.config.get("game_dir", ""))))
         form.addRow("Game folder", self._path_picker(self.game_dir_edit, self._choose_game_dir))
 
         self.game_type_combo = QComboBox()
@@ -59,15 +60,15 @@ class GameTabMixin:
         self.game_type_combo.setCurrentText(normalize_gui_game_type(str(self.config.get("game_type", "rpg-maker-mv"))))
         form.addRow("Game type", self.game_type_combo)
 
-        self.texts_csv_edit = QLineEdit(str(self.config.get("texts_csv", "work/texts.csv")))
+        self.texts_csv_edit = QLineEdit(normalize_path_text(str(self.config.get("texts_csv", "work/texts.csv"))))
         self.texts_csv_edit.setReadOnly(True)
         form.addRow("Texts CSV", self.texts_csv_edit)
 
-        self.translations_csv_edit = QLineEdit(str(self.config.get("translations_csv", "work/translations.csv")))
+        self.translations_csv_edit = QLineEdit(normalize_path_text(str(self.config.get("translations_csv", "work/translations.csv"))))
         self.translations_csv_edit.setReadOnly(True)
         form.addRow("Translations CSV", self.translations_csv_edit)
 
-        self.out_dir_edit = QLineEdit(str(self.config.get("out_dir", "work/translated_data")))
+        self.out_dir_edit = QLineEdit(normalize_path_text(str(self.config.get("out_dir", "work/translated_data"))))
         self.out_dir_edit.setReadOnly(True)
         form.addRow("Output folder", self.out_dir_edit)
 
@@ -88,8 +89,9 @@ class GameTabMixin:
         from PySide6.QtWidgets import QFileDialog
         value = QFileDialog.getExistingDirectory(self, "Select game folder", self.game_dir_edit.text())
         if value:
-            self.game_dir_edit.setText(value)
-            self._set_default_work_paths(Path(value))
+            normalized = normalize_path_text(value)
+            self.game_dir_edit.setText(normalized)
+            self._set_default_work_paths(Path(normalized))
             self.refresh_backups()
             self.refresh_cheat_status()
             self.refresh_xunity_status()

@@ -37,6 +37,7 @@ from ...llm import _context_hint
 from ...models import TextEntry, TranslationResult, text_identity
 from ...translate_pipeline import TranslateOptions, run_translate
 from ...validate import translation_warnings
+from ..paths import normalize_path_text
 
 
 _PREVIEW_STATUS_DONE = "done"
@@ -108,10 +109,10 @@ class PreviewTabMixin:
         cfg = QGroupBox("Translation settings")
         form = QFormLayout(cfg)
 
-        self.preview_source_edit = QLineEdit(str(self.config.get("preview_source", "")))
+        self.preview_source_edit = QLineEdit(normalize_path_text(str(self.config.get("preview_source", ""))))
         form.addRow("Source CSV:", self._path_picker(self.preview_source_edit, self._choose_preview_source))
 
-        self.preview_output_edit = QLineEdit(str(self.config.get("preview_output", "")))
+        self.preview_output_edit = QLineEdit(normalize_path_text(str(self.config.get("preview_output", ""))))
         form.addRow("Output CSV:", self._path_picker(self.preview_output_edit, self._choose_preview_output))
 
         row_lang = QHBoxLayout()
@@ -274,7 +275,7 @@ class PreviewTabMixin:
             "CSV files (*.csv);;All files (*)",
         )
         if value:
-            self.preview_source_edit.setText(value)
+            self.preview_source_edit.setText(normalize_path_text(value))
 
     def _choose_preview_output(self) -> None:
         value, _ = QFileDialog.getOpenFileName(
@@ -282,7 +283,7 @@ class PreviewTabMixin:
             "CSV files (*.csv);;All files (*)",
         )
         if value:
-            self.preview_output_edit.setText(value)
+            self.preview_output_edit.setText(normalize_path_text(value))
 
     # ------------------------------------------------------------------
     # Load existing CSV
