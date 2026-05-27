@@ -196,9 +196,9 @@ def test_extract_rpg_maker_system_arrays(tmp_path):
     assert "Fight" in sources
     assert "Max HP" in sources
     assert "Save to which file?" in sources
-    # switches, variables, and assets must NOT be extracted
-    assert "switch1" not in sources
-    assert "var1" not in sources
+    # switches/variables now extracted (T++ parity); assets remain excluded
+    assert "switch1" in sources
+    assert "var1" in sources
     assert "TitleAsset" not in sources
     assert "Battle1" not in sources
     assert "Cursor2" not in sources
@@ -271,7 +271,8 @@ def test_extract_rpg_maker_event_choices(tmp_path):
     ]
 
 
-def test_extract_rpg_maker_skips_plugin_and_script_commands(tmp_path):
+def test_extract_rpg_maker_extracts_plugin_and_script_commands(tmp_path):
+    """T++ parity: scripts (355/655), plugin commands (356/357), comments (108/408) all extracted."""
     map_data = json.dumps({
         "events": [
             None,
@@ -281,9 +282,11 @@ def test_extract_rpg_maker_skips_plugin_and_script_commands(tmp_path):
                     {
                         "list": [
                             {"code": 355, "parameters": ["$gameMessage.add('Script text')"]},
+                            {"code": 655, "parameters": ["continued script text"]},
                             {"code": 356, "parameters": ["Plugin Command Text"]},
                             {"code": 357, "parameters": ["PluginName", "command", "Display Text"]},
-                            {"code": 655, "parameters": ["continued script text"]},
+                            {"code": 108, "parameters": ["Comment line 1"]},
+                            {"code": 408, "parameters": ["Comment line 2"]},
                             {"code": 401, "parameters": ["Visible dialogue"]},
                         ]
                     }
@@ -294,7 +297,13 @@ def test_extract_rpg_maker_skips_plugin_and_script_commands(tmp_path):
     _make_rpg_game(tmp_path, {"Map001.json": map_data})
     entries = extract_rpg_maker(tmp_path)
     sources = [entry.source for entry in entries]
-    assert sources == ["Visible dialogue"]
+    contexts = {entry.context for entry in entries}
+    assert "Visible dialogue" in sources
+    assert "Plugin Command Text" in sources
+    assert "Display Text" in sources
+    assert "$gameMessage.add('Script text')\ncontinued script text" in sources
+    assert "Comment line 1\nComment line 2" in sources
+    assert {"rpg_maker_event_text", "rpg_maker_plugin_command", "rpg_maker_script", "rpg_maker_comment"} <= contexts
 
 
 def test_extract_rpg_maker_www_data(tmp_path):
@@ -306,11 +315,13 @@ def test_extract_rpg_maker_www_data(tmp_path):
 
 
 def test_extract_rpg_maker_skips_editor_name_files(tmp_path):
-    tilesets = json.dumps([None, {"id": 1, "name": "Outside", "tilesetNames": ["World_A1"]}])
-    animations = json.dumps([None, {"id": 1, "name": "Hit", "animation1Name": "Hit1", "animation2Name": "Slash"}])
-    _make_rpg_game(tmp_path, {"Tilesets.json": tilesets, "Animations.json": animations})
+    # Animations + Tilesets now extract `name` (T++ parity); only verify Tilesets `tilesetNames` (asset list) is skipped
+    tilesets = json.dumps([None, {"id": 1, "name": "外", "tilesetNames": ["World_A1"]}])
+    _make_rpg_game(tmp_path, {"Tilesets.json": tilesets})
     entries = extract_rpg_maker(tmp_path)
-    assert entries == []
+    sources = [e.source for e in entries]
+    assert "外" in sources
+    assert "World_A1" not in sources  # asset filenames stay out
 
 
 def test_extract_rpg_maker_map_infos_names(tmp_path):

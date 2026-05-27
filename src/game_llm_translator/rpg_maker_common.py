@@ -10,17 +10,19 @@ from .models import TextEntry, TranslationResult
 
 RPG_MAKER_TEXT_KEYS = {"name", "nickname", "profile", "description", "message", "displayName"}
 RPG_MAKER_DATABASE_TEXT_FIELDS = {
-    "Actors.json": {"name", "nickname", "profile"},
-    "Classes.json": {"name"},
-    "Skills.json": {"name", "description", "message1", "message2"},
-    "Items.json": {"name", "description"},
-    "Weapons.json": {"name", "description"},
-    "Armors.json": {"name", "description"},
-    "Enemies.json": {"name"},
-    "States.json": {"name", "description", "message1", "message2", "message3", "message4"},
+    "Actors.json": {"name", "nickname", "profile", "note"},
+    "Classes.json": {"name", "note"},
+    "Skills.json": {"name", "description", "message1", "message2", "note"},
+    "Items.json": {"name", "description", "note"},
+    "Weapons.json": {"name", "description", "note"},
+    "Armors.json": {"name", "description", "note"},
+    "Enemies.json": {"name", "note"},
+    "States.json": {"name", "description", "message1", "message2", "message3", "message4", "note"},
+    "Animations.json": {"name"},
+    "Tilesets.json": {"name", "note"},
 }
 RPG_MAKER_SYSTEM_TEXT_KEYS = {"gameTitle", "currencyUnit"}
-RPG_MAKER_SYSTEM_ARRAY_KEYS = {"armorTypes", "elements", "equipTypes", "skillTypes", "weaponTypes"}
+RPG_MAKER_SYSTEM_ARRAY_KEYS = {"armorTypes", "elements", "equipTypes", "skillTypes", "weaponTypes", "switches", "variables"}
 RPG_MAKER_SYSTEM_TERM_KEYS = {"basic", "commands", "params", "messages"}
 RPG_MAKER_ASSET_NAME_KEYS = {
     "animation1Name",
@@ -39,6 +41,10 @@ RPG_MAKER_ASSET_NAME_KEYS = {
 }
 RPG_MAKER_AUDIO_KEYS = {"bgm", "bgs", "me", "se", "battleBgm", "titleBgm", "victoryMe", "defeatMe"}
 RPG_MAKER_EVENT_TEXT_CODES = {401, 405}
+RPG_MAKER_COMMENT_CODES = {108, 408}
+RPG_MAKER_SCRIPT_CODES = {355, 655}
+RPG_MAKER_PLUGIN_COMMAND_MV = 356
+RPG_MAKER_PLUGIN_COMMAND_MZ = 357
 RPG_MAKER_DIALOGUE_BLOCK_START = 101
 RPG_MAKER_DIALOGUE_TEXT_LINE = 401
 RPG_MAKER_CHOICE_CODE = 102
@@ -351,6 +357,35 @@ def _walk_plugin_ui_json(value: Any, file: Path, prefix: str = "$") -> list[Text
     return entries
 
 
+def _walk_generic_text(value: Any, file: Path, prefix: str = "$") -> list[TextEntry]:
+    """Greedy walker for unknown JSON files (PKD_*, Windows.json, etc.).
+
+    Extracts every string passing _is_translatable_ui_text, mirroring
+    Translator++'s rmmvjs behavior. Skips known noise keys.
+    """
+    entries: list[TextEntry] = []
+    context = f"rpg_maker_generic_{file.stem.lower()}"
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_key = f"{prefix}.{key}"
+            if key in _PLUGIN_UI_SKIP_KEYS:
+                continue
+            if isinstance(child, str):
+                if _is_translatable_ui_text(child):
+                    entries.append(TextEntry(file=file, key=child_key, source=child, context=context))
+            elif isinstance(child, (dict, list)):
+                entries.extend(_walk_generic_text(child, file, child_key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            child_key = f"{prefix}[{index}]"
+            if isinstance(child, str):
+                if _is_translatable_ui_text(child):
+                    entries.append(TextEntry(file=file, key=child_key, source=child, context=context))
+            elif isinstance(child, (dict, list)):
+                entries.extend(_walk_generic_text(child, file, child_key))
+    return entries
+
+
 def _walk_system_json(value: Any, file: Path, prefix: str = "$") -> list[TextEntry]:
     entries: list[TextEntry] = []
     if not isinstance(value, dict):
@@ -501,6 +536,78 @@ def _merge_dialogue_blocks(
             i += 1
             continue
 
+        if code in RPG_MAKER_COMMENT_CODES:
+            text_lines: list[str] = []
+            text_keys: list[str] = []
+            j = i
+            while j < len(commands):
+                next_cmd = commands[j]
+                if not isinstance(next_cmd, dict) or next_cmd.get("code") not in RPG_MAKER_COMMENT_CODES:
+                    break
+                next_params = next_cmd.get("parameters")
+                if not isinstance(next_params, list) or not next_params or not _is_text(next_params[0]):
+                    j += 1
+                    continue
+                text_lines.append(next_params[0])
+                text_keys.append(f"{prefix}[{j}].parameters[0]")
+                j += 1
+            if text_lines:
+                merged = "\n".join(text_lines)
+                if len(text_lines) > 1:
+                    entries.append(TextEntry(file=file, key=text_keys[0], source=merged, context="rpg_maker_comment", context_text=local_context, sub_keys=text_keys))
+                else:
+                    entries.append(TextEntry(file=file, key=text_keys[0], source=text_lines[0], context="rpg_maker_comment", context_text=local_context))
+            i = max(j, i + 1)
+            continue
+
+        if code in RPG_MAKER_SCRIPT_CODES:
+            text_lines: list[str] = []
+            text_keys: list[str] = []
+            j = i
+            while j < len(commands):
+                next_cmd = commands[j]
+                if not isinstance(next_cmd, dict) or next_cmd.get("code") not in RPG_MAKER_SCRIPT_CODES:
+                    break
+                next_params = next_cmd.get("parameters")
+                if not isinstance(next_params, list) or not next_params or not _is_text(next_params[0]):
+                    j += 1
+                    continue
+                text_lines.append(next_params[0])
+                text_keys.append(f"{prefix}[{j}].parameters[0]")
+                j += 1
+            if text_lines:
+                merged = "\n".join(text_lines)
+                if len(text_lines) > 1:
+                    entries.append(TextEntry(file=file, key=text_keys[0], source=merged, context="rpg_maker_script", context_text=local_context, sub_keys=text_keys))
+                else:
+                    entries.append(TextEntry(file=file, key=text_keys[0], source=text_lines[0], context="rpg_maker_script", context_text=local_context))
+            i = max(j, i + 1)
+            continue
+
+        if code == RPG_MAKER_PLUGIN_COMMAND_MV and isinstance(params, list) and params and _is_text(params[0]):
+            entries.append(TextEntry(
+                file=file,
+                key=f"{prefix}[{i}].parameters[0]",
+                source=params[0],
+                context="rpg_maker_plugin_command",
+                context_text=local_context,
+            ))
+            i += 1
+            continue
+
+        if code == RPG_MAKER_PLUGIN_COMMAND_MZ and isinstance(params, list):
+            for p_idx, pval in enumerate(params):
+                if _is_text(pval):
+                    entries.append(TextEntry(
+                        file=file,
+                        key=f"{prefix}[{i}].parameters[{p_idx}]",
+                        source=pval,
+                        context="rpg_maker_plugin_command",
+                        context_text=local_context,
+                    ))
+            i += 1
+            continue
+
         if _is_choice_command(cmd):
             if isinstance(params, list) and params and isinstance(params[0], list):
                 for index, choice in enumerate(params[0]):
@@ -590,8 +697,10 @@ def _walk_event_json(value: Any, file: Path, prefix: str = "$", inherited_contex
             child_key = f"{prefix}.{key}"
             if key == "displayName":
                 _append_text_entry(entries, file, child_key, child, "rpg_maker_map_display_name", local_context)
-            elif key == "name" and _is_event_object(value):
-                pass
+            elif key == "name" and isinstance(value.get("id"), int) and (_is_event_object(value) or isinstance(value.get("list"), list)):
+                _append_text_entry(entries, file, child_key, child, "rpg_maker_event_name", local_context)
+            elif key == "note" and isinstance(value, dict) and (_is_event_object(value) or "events" in value or "data" in value):
+                _append_text_entry(entries, file, child_key, child, "rpg_maker_note", local_context)
             elif key == "list" and isinstance(child, list):
                 list_context = inherited_context
                 parent_obj = value
@@ -638,7 +747,7 @@ def _walk_json(value: Any, file: Path, prefix: str = "$", inherited_context: str
         return entries
     if file.name == "CommonEvents.json" or file.name.startswith("Map"):
         return _walk_event_json(value, file, prefix, inherited_context, plugin_text_extractor)
-    return []
+    return _walk_generic_text(value, file, prefix)
 
 
 def _data_dir(game_dir: Path) -> Path:
