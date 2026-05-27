@@ -136,26 +136,21 @@ class TranslateTabMixin:
         if value:
             self.correction_table_path_edit.setText(normalize_path_text(value))
 
-    def _extract_entries(self) -> list:
-        game_dir = self._game_dir_path()
-        gt = self.game_type_combo.currentText()
-        if gt == "unity-xunity":
+    def _extract_entries(self, game_dir: Path, game_type: str) -> list:
+        if game_type == "unity-xunity":
             return extract_xunity(game_dir)
-        if normalize_gui_game_type(gt) == "rpg-maker-mz":
+        if normalize_gui_game_type(game_type) == "rpg-maker-mz":
             return extract_rpg_maker_mz(game_dir)
         return extract_rpg_maker_mv(game_dir)
 
-    def _dedupe_results(self, results: list[TranslationResult], wanted_ids: set) -> list[TranslationResult]:
-        by_id: dict[tuple[str, str], TranslationResult] = {}
-        for r in results:
-            ident = text_identity(r.file, r.key)
-            if ident in wanted_ids:
-                by_id[ident] = r
-        return list(by_id.values())
+    def _build_translate_options(self) -> TranslateOptions:
+        """Snapshot widget values on the main thread into a TranslateOptions.
 
-    def _translate_entries(self, entries: list[TextEntry], translations_csv: Path) -> list[TranslationResult]:
+        Must be called before spawning a worker — never from a worker thread.
+        """
         gp = self.glossary_path_edit.text().strip()
-        options = TranslateOptions(
+        cp = self.correction_table_path_edit.text().strip()
+        return TranslateOptions(
             target_lang=self.target_lang_edit.text(),
             source_lang=None if self.source_lang_edit.text().lower() == "auto" else self.source_lang_edit.text(),
             provider=self.provider_combo.currentText(),
@@ -167,11 +162,21 @@ class TranslateTabMixin:
             use_memory=self.reuse_memory_check.isChecked(),
             save_memory=self.save_memory_check.isChecked(),
             glossary_path=Path(gp) if gp else None,
-            correction_table_path=Path(cp) if (cp := self.correction_table_path_edit.text().strip()) else None,
+            correction_table_path=Path(cp) if cp else None,
             restart=self.restart_check.isChecked(),
             on_log=self._log,
             stop_event=self.stop_requested,
         )
+
+    def _dedupe_results(self, results: list[TranslationResult], wanted_ids: set) -> list[TranslationResult]:
+        by_id: dict[tuple[str, str], TranslationResult] = {}
+        for r in results:
+            ident = text_identity(r.file, r.key)
+            if ident in wanted_ids:
+                by_id[ident] = r
+        return list(by_id.values())
+
+    def _translate_entries(self, entries: list[TextEntry], translations_csv: Path, options: TranslateOptions) -> list[TranslationResult]:
         results, report = run_translate(
             entries,
             translations_csv,
@@ -228,16 +233,18 @@ class TranslateTabMixin:
     def pipeline(self) -> None:
         # Read widget values on the main thread before starting the worker
         game_type = self.game_type_combo.currentText()
+        game_dir = self._game_dir_path()
         texts_csv = self.texts_csv_edit.text()
         translations_csv = self.translations_csv_edit.text()
         out_dir_value = self.out_dir_edit.text()
+        options = self._build_translate_options()
 
         def job() -> None:
-            entries = self._extract_entries()
+            entries = self._extract_entries(game_dir, game_type)
             self._check_stopped()
             save_entries(entries, Path(texts_csv))
             self._log(f"Extracted {len(entries)} entries")
-            results = self._translate_entries(entries, Path(translations_csv))
+            results = self._translate_entries(entries, Path(translations_csv), options)
             self._check_stopped()
             out_dir = Path(out_dir_value)
             if game_type == "unity-xunity":
@@ -274,6 +281,9 @@ class TranslateTabMixin:
         if reply != QMessageBox.StandardButton.Yes:
             return
 
+        # Snapshot widget values on the main thread before spawning the worker
+        options = self._build_translate_options()
+
         def job() -> None:
             rows = load_results(translations_csv)
             rewritten: list[TranslationResult] = []
@@ -287,6 +297,6 @@ class TranslateTabMixin:
             save_results(rewritten, translations_csv)
             self._log(f"Cleared {cleared} flagged row(s) — re-running translate pipeline.")
             entries = [TextEntry(r.file, r.key, r.source, r.context, "") for r in rewritten]
-            self._translate_entries(entries, translations_csv)
+            self._translate_entries(entries, translations_csv, options)
             self._log(f"Retry done -> {translations_csv}")
         self._run("retry flagged rows", job)

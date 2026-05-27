@@ -89,7 +89,7 @@ class ProviderTabMixin:
 
         self.provider_note = QLabel("")
         self.provider_note.setWordWrap(True)
-        self.provider_note.setStyleSheet("color: #666;")
+        self.provider_note.setStyleSheet("color: palette(placeholder-text);")
         form.addRow("", self.provider_note)
 
         save_btn = QPushButton("Save provider settings")
