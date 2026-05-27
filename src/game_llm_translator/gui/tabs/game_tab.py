@@ -11,6 +11,7 @@ from typing import Callable, cast
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -43,6 +44,7 @@ class GameTabMixin:
     _game_dir_path: Callable
     _path_picker: Callable
     _action_button: Callable
+    _primary_button: Callable
 
     # ----- Game tab -----
 
@@ -60,21 +62,28 @@ class GameTabMixin:
         self.game_type_combo.setCurrentText(normalize_gui_game_type(str(self.config.get("game_type", "rpg-maker-mv"))))
         form.addRow("Game type", self.game_type_combo)
 
+        # Auto-derived working paths — collapsed by default to reduce noise.
+        paths_group = QGroupBox("Working paths (auto-derived)")
+        paths_group.setCheckable(True)
+        paths_group.setChecked(False)
+        paths_form = QFormLayout(paths_group)
+
         self.texts_csv_edit = QLineEdit(normalize_path_text(str(self.config.get("texts_csv", "work/texts.csv"))))
         self.texts_csv_edit.setReadOnly(True)
-        form.addRow("Texts CSV", self.texts_csv_edit)
+        paths_form.addRow("Texts CSV", self.texts_csv_edit)
 
         self.translations_csv_edit = QLineEdit(normalize_path_text(str(self.config.get("translations_csv", "work/translations.csv"))))
         self.translations_csv_edit.setReadOnly(True)
-        form.addRow("Translations CSV", self.translations_csv_edit)
+        paths_form.addRow("Translations CSV", self.translations_csv_edit)
 
         self.out_dir_edit = QLineEdit(normalize_path_text(str(self.config.get("out_dir", "work/translated_data"))))
         self.out_dir_edit.setReadOnly(True)
-        form.addRow("Output folder", self.out_dir_edit)
+        paths_form.addRow("Output folder", self.out_dir_edit)
+        outer.addWidget(paths_group)
 
         # Action row
         action_row = QHBoxLayout()
-        action_row.addWidget(self._action_button("Scan Game", self.scan))
+        action_row.addWidget(self._primary_button("Scan Game", self.scan))
         action_row.addStretch()
         outer.addLayout(action_row)
 

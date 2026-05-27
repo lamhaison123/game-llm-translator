@@ -62,6 +62,7 @@ class TranslateTabMixin:
     _game_dir_path: Callable
     _path_picker: Callable
     _action_button: Callable
+    _primary_button: Callable
     _set_default_work_paths: Callable
 
     # ----- Translate tab -----
@@ -71,9 +72,15 @@ class TranslateTabMixin:
         outer = QVBoxLayout(tab)
 
         actions = QHBoxLayout()
-        actions.addWidget(self._action_button("Auto-translate (extract + translate + export)", self.auto_translate))
-        actions.addWidget(self._action_button("Extract + Translate + Export Copy", self.pipeline))
-        actions.addWidget(self._action_button("Retry flagged rows (fallback + CJK leak)", self.retry_flagged_rows))
+        auto_btn = self._primary_button("Auto-translate", self.auto_translate)
+        auto_btn.setToolTip("Extract + translate + export in one step (recommended).")
+        actions.addWidget(auto_btn)
+        pipeline_btn = self._action_button("Translate (full pipeline)", self.pipeline)
+        pipeline_btn.setToolTip("Extract → translate → export. Same as Auto-translate but uses current Setup paths explicitly.")
+        actions.addWidget(pipeline_btn)
+        retry_btn = self._action_button("Retry flagged", self.retry_flagged_rows)
+        retry_btn.setToolTip("Re-translate rows where target==source or target still contains CJK characters.")
+        actions.addWidget(retry_btn)
         actions.addStretch()
         outer.addLayout(actions)
 

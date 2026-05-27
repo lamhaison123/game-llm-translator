@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -158,15 +159,31 @@ class TranslatorGUI(
         root = QVBoxLayout(central)
         root.setContentsMargins(12, 12, 12, 12)
 
-        # Header
+        # Header — app title + game name + step indicator + theme toggle
         header = QHBoxLayout()
+        title_block = QVBoxLayout()
+        title_block.setSpacing(0)
         title = QLabel("Game LLM Translator")
         font = title.font()
-        font.setPointSize(14)
-        font.setBold(True)
+        font.setPointSize(10)
         title.setFont(font)
-        header.addWidget(title)
+        title.setStyleSheet("color: #888;")
+        title_block.addWidget(title)
+        self.game_name_label = QLabel("(no game selected)")
+        gfont = self.game_name_label.font()
+        gfont.setPointSize(14)
+        gfont.setBold(True)
+        self.game_name_label.setFont(gfont)
+        title_block.addWidget(self.game_name_label)
+        header.addLayout(title_block)
         header.addStretch()
+        self.step_label = QLabel("")
+        sfont = self.step_label.font()
+        sfont.setPointSize(11)
+        self.step_label.setFont(sfont)
+        self.step_label.setStyleSheet("color: #5b6cff;")
+        header.addWidget(self.step_label)
+        header.addSpacing(12)
         self.theme_button = QPushButton("Toggle theme")
         self.theme_button.clicked.connect(self._toggle_theme)
         header.addWidget(self.theme_button)
@@ -174,16 +191,13 @@ class TranslatorGUI(
 
         # Tabs
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_game_tab(), "Game")
-        self.tabs.addTab(self._build_provider_tab(), "Provider")
-        self.tabs.addTab(self._build_preview_tab(), "Preview & Edit")
+        self.tabs.addTab(self._build_setup_tab(), "Setup")
         self.tabs.addTab(self._build_translate_tab(), "Translate")
-        self.tabs.addTab(self._build_review_tab(), "Review")
+        self.tabs.addTab(self._build_preview_tab(), "Review")
         self.tabs.addTab(self._build_apply_tab(), "Apply")
-        self.tabs.addTab(self._build_recovery_tab(), "Backups")
-        self.tabs.addTab(self._build_activity_tab(), "Activity")
-        self.tabs.addTab(self._build_detail_tab(), "Detail")
-        self.tabs.addTab(self._build_api_log_tab(), "API Log")
+        self.tabs.addTab(self._build_tools_tab(), "Tools")
+        self.tabs.addTab(self._build_logs_tab(), "Logs")
+        self.tabs.currentChanged.connect(self._refresh_header)
         root.addWidget(self.tabs, 1)
 
         # Status bar
@@ -197,10 +211,68 @@ class TranslatorGUI(
         bar.addPermanentWidget(self.progress_bar)
         self.progress_text_label = QLabel("")
         bar.addPermanentWidget(self.progress_text_label)
-        self.stop_button = QPushButton("Stop")
+        self.stop_button = QPushButton("■ Stop")
         self.stop_button.setEnabled(False)
+        self.stop_button.setMinimumWidth(80)
+        self.stop_button.setStyleSheet(
+            "QPushButton:enabled { background-color: #c44; color: white; font-weight: bold; }"
+        )
         self.stop_button.clicked.connect(self.stop_current)
         bar.addPermanentWidget(self.stop_button)
+
+        # When game_dir changes, refresh header.
+        self.game_dir_edit.textChanged.connect(self._refresh_header)
+        self._refresh_header()
+
+    def _refresh_header(self, *_args) -> None:
+        """Update game name + step indicator in the header."""
+        if not hasattr(self, "game_name_label"):
+            return
+        game_path = self.game_dir_edit.text().strip() if hasattr(self, "game_dir_edit") else ""
+        if game_path:
+            name = Path(game_path).name or game_path
+            self.game_name_label.setText(name)
+            self.game_name_label.setToolTip(game_path)
+        else:
+            self.game_name_label.setText("(no game selected)")
+            self.game_name_label.setToolTip("")
+        if hasattr(self, "tabs"):
+            steps = ["1. Setup", "2. Translate", "3. Review", "4. Apply", "Tools", "Logs"]
+            idx = self.tabs.currentIndex()
+            if 0 <= idx < len(steps):
+                self.step_label.setText(steps[idx])
+            else:
+                self.step_label.setText("")
+
+    # ------------------------------------------------------------------
+    # Composite tabs (merge multiple mixin builders into one tab page)
+    # ------------------------------------------------------------------
+
+    def _build_setup_tab(self) -> QWidget:
+        """Setup = Game group + Provider group, side-by-side stacked."""
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(8, 8, 8, 8)
+
+        game_group = QGroupBox("Game")
+        gl = QVBoxLayout(game_group)
+        gl.setContentsMargins(8, 12, 8, 8)
+        gl.addWidget(self._build_game_tab())
+        outer.addWidget(game_group)
+
+        provider_group = QGroupBox("Provider && Languages")
+        pl = QVBoxLayout(provider_group)
+        pl.setContentsMargins(8, 12, 8, 8)
+        pl.addWidget(self._build_provider_tab())
+        outer.addWidget(provider_group)
+
+        outer.addStretch()
+        return tab
+
+    def _build_tools_tab(self) -> QWidget:
+        """Tools = Backups + Memory cleanup (merged from old Backups tab)."""
+        # The existing _build_recovery_tab already contains both groups.
+        return self._build_recovery_tab()
 
     # ------------------------------------------------------------------
     # Shared widget helpers
@@ -223,6 +295,20 @@ class TranslatorGUI(
         btn = QPushButton(text)
         btn.clicked.connect(slot)
         self.action_buttons.append(btn)
+        return btn
+
+    _PRIMARY_BUTTON_QSS = (
+        "QPushButton { background-color: #5b6cff; color: white; font-weight: bold;"
+        " border: none; padding: 6px 14px; border-radius: 4px; }"
+        "QPushButton:hover:enabled { background-color: #4858e0; }"
+        "QPushButton:pressed:enabled { background-color: #3a48b8; }"
+        "QPushButton:disabled { background-color: #b0b6c8; color: #eee; }"
+    )
+
+    def _primary_button(self, text: str, slot: Callable[[], None]) -> QPushButton:
+        """An action button styled as the tab's primary CTA."""
+        btn = self._action_button(text, slot)
+        btn.setStyleSheet(self._PRIMARY_BUTTON_QSS)
         return btn
 
     def _safe_button(self, text: str, slot: Callable[[], None]) -> QPushButton:

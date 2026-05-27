@@ -51,13 +51,17 @@ class ApplyTabMixin:
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
-        export = QGroupBox("Export translated data")
+        export = QGroupBox("Export translated data (safe — writes to output folder)")
         e = QHBoxLayout(export)
-        e.addWidget(self._action_button("Export Translated Data", self.export_translated_data))
+        e.addWidget(self._primary_button("Export", self.export_translated_data))
         e.addStretch()
         outer.addWidget(export)
 
-        risky = QGroupBox("Apply translated data to game")
+        risky = QGroupBox("⚠ Apply translated data to game (modifies game files)")
+        risky.setStyleSheet(
+            "QGroupBox { border: 1px solid #c44; border-radius: 4px; margin-top: 8px; padding-top: 8px; }"
+            "QGroupBox::title { color: #c44; left: 8px; padding: 0 4px; }"
+        )
         r = QVBoxLayout(risky)
         r_label = QLabel("Creates a backup, then replaces JSON files in the game data folder. Close the game first.")
         r_label.setWordWrap(True)
@@ -69,7 +73,11 @@ class ApplyTabMixin:
         r.addLayout(r_row)
         outer.addWidget(risky)
 
-        xunity = QGroupBox("BepInEx + XUnity.AutoTranslator (Unity games)")
+        xunity = QGroupBox("⚠ BepInEx + XUnity.AutoTranslator (modifies Unity game files)")
+        xunity.setStyleSheet(
+            "QGroupBox { border: 1px solid #c44; border-radius: 4px; margin-top: 8px; padding-top: 8px; }"
+            "QGroupBox::title { color: #c44; left: 8px; padding: 0 4px; }"
+        )
         xu = QVBoxLayout(xunity)
         xu_label = QLabel(
             "Automatically installs BepInEx + XUnity.AutoTranslator into a Unity game.\n"
@@ -90,7 +98,11 @@ class ApplyTabMixin:
         xu.addLayout(xu_row)
         outer.addWidget(xunity)
 
-        cheat = QGroupBox("Cheat plugin (RPG Maker MV/MZ)")
+        cheat = QGroupBox("⚠ Cheat plugin (modifies RPG Maker MV/MZ game files)")
+        cheat.setStyleSheet(
+            "QGroupBox { border: 1px solid #c44; border-radius: 4px; margin-top: 8px; padding-top: 8px; }"
+            "QGroupBox::title { color: #c44; left: 8px; padding: 0 4px; }"
+        )
         c = QVBoxLayout(cheat)
         c_label = QLabel("Installs RPG Maker MV/MZ Cheat UI Plugin. Toggle in game: Ctrl+C. Remove uses this app's manifest only.")
         c_label.setWordWrap(True)

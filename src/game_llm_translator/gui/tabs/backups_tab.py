@@ -67,7 +67,11 @@ class BackupsTabMixin:
         b.addStretch()
         outer.addWidget(backup_group)
 
-        memory_group = QGroupBox("Memory & translation cleanup")
+        memory_group = QGroupBox("⚠ Memory && translation cleanup (destructive — deletes generated data)")
+        memory_group.setStyleSheet(
+            "QGroupBox { border: 1px solid #c44; border-radius: 4px; margin-top: 8px; padding-top: 8px; }"
+            "QGroupBox::title { color: #c44; left: 8px; padding: 0 4px; }"
+        )
         m = QHBoxLayout(memory_group)
         m.addWidget(self._action_button("Clear Old Translation", self.clear_old_translation))
         m.addWidget(self._action_button("Clear Game Memory", self.clear_game_memory))

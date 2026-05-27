@@ -33,6 +33,7 @@ class LogTabsMixin:
     _api_log_timer: QTimer
     _log_row_limit: int
     _detail_row_limit: int
+    _logs_sub_tabs: QTabWidget
     signals: WorkerSignals
 
     def _make_log_table(self, columns: list[str]) -> QTreeWidget:
@@ -47,9 +48,29 @@ class LogTabsMixin:
         t.setFont(mono)
         return t
 
-    def _build_activity_tab(self) -> QWidget:
+    def _build_logs_tab(self) -> QWidget:
+        """Single Logs tab containing 3 sub-views: Activity / Detail / API Log."""
         tab = QWidget()
         outer = QVBoxLayout(tab)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._logs_sub_tabs = QTabWidget()
+        self._logs_sub_tabs.addTab(self._build_activity_view(), "Activity")
+        self._logs_sub_tabs.addTab(self._build_detail_view(), "Detail")
+        self._logs_sub_tabs.addTab(self._build_api_log_view(), "API Log")
+        self._logs_sub_tabs.currentChanged.connect(self._on_logs_sub_tab_changed)
+        outer.addWidget(self._logs_sub_tabs, 1)
+
+        self._api_log_file_size = 0
+        self._api_log_timer = QTimer(self)
+        self._api_log_timer.setInterval(2000)
+        self._api_log_timer.timeout.connect(self._api_log_poll)
+
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        return tab
+
+    def _build_activity_view(self) -> QWidget:
+        view = QWidget()
+        outer = QVBoxLayout(view)
         toolbar = QHBoxLayout()
         toolbar.addWidget(self._safe_button("Open Log Folder", self.open_logs))
         clear_btn = QPushButton("Clear")
@@ -61,11 +82,11 @@ class LogTabsMixin:
         self.log_view.setColumnWidth(0, 80)
         self.log_view.setColumnWidth(1, 55)
         outer.addWidget(self.log_view, 1)
-        return tab
+        return view
 
-    def _build_detail_tab(self) -> QWidget:
-        tab = QWidget()
-        outer = QVBoxLayout(tab)
+    def _build_detail_view(self) -> QWidget:
+        view = QWidget()
+        outer = QVBoxLayout(view)
         toolbar = QHBoxLayout()
         toolbar.addWidget(self._safe_button("Open Log Folder", self.open_logs))
         clear_btn = QPushButton("Clear")
@@ -78,15 +99,14 @@ class LogTabsMixin:
         self.detail_log_view.setColumnWidth(1, 55)
         self.detail_log_view.setColumnWidth(2, 120)
         outer.addWidget(self.detail_log_view, 1)
-        return tab
+        return view
 
-    def _build_api_log_tab(self) -> QWidget:
-        tab = QWidget()
-        outer = QVBoxLayout(tab)
+    def _build_api_log_view(self) -> QWidget:
+        view = QWidget()
+        outer = QVBoxLayout(view)
 
         toolbar = QHBoxLayout()
-        refresh_btn = self._safe_button("Refresh", self._api_log_refresh)
-        toolbar.addWidget(refresh_btn)
+        toolbar.addWidget(self._safe_button("Refresh", self._api_log_refresh))
         clear_btn = QPushButton("Clear view")
         clear_btn.clicked.connect(lambda: self.api_log_view.clear())
         toolbar.addWidget(clear_btn)
@@ -108,22 +128,32 @@ class LogTabsMixin:
         self.api_log_view.setReadOnly(True)
         self.api_log_view.setFont(QFont("Consolas", 8))
         outer.addWidget(self.api_log_view, 1)
+        return view
 
-        self._api_log_file_size = 0
-        self._api_log_timer = QTimer(self)
-        self._api_log_timer.setInterval(2000)
-        self._api_log_timer.timeout.connect(self._api_log_poll)
+    def _is_api_log_visible(self) -> bool:
+        """True when the API Log sub-tab inside the Logs tab is the visible view."""
+        if not hasattr(self, "_logs_sub_tabs"):
+            return False
+        logs_tab_index = self._find_logs_tab_index()
+        if logs_tab_index < 0 or self.tabs.currentIndex() != logs_tab_index:
+            return False
+        return self._logs_sub_tabs.currentIndex() == 2  # API Log is 3rd sub-tab
 
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        return tab
+    def _find_logs_tab_index(self) -> int:
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "Logs":
+                return i
+        return -1
 
-    def _on_tab_changed(self, index: int) -> None:
-        api_log_index = self.tabs.count() - 1
-        if index == api_log_index:
+    def _on_tab_changed(self, _index: int) -> None:
+        if self._is_api_log_visible():
             self._api_log_refresh()
             self._api_log_timer.start()
         else:
             self._api_log_timer.stop()
+
+    def _on_logs_sub_tab_changed(self, _index: int) -> None:
+        self._on_tab_changed(self.tabs.currentIndex())
 
     def _api_log_poll(self) -> None:
         path = api_log_file_path()

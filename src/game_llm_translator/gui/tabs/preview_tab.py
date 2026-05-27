@@ -105,6 +105,14 @@ class PreviewTabMixin:
         tab = QWidget()
         outer = QVBoxLayout(tab)
 
+        # --- Bulk editor (from old Review tab) ---
+        bulk = QGroupBox("Bulk editor")
+        bl = QHBoxLayout(bulk)
+        bl.addWidget(self._action_button("Open Bulk Editor (translations.csv)", self._open_bulk_editor))
+        bl.addWidget(self._safe_button("Open CSV Externally", self._open_translations_csv_externally))
+        bl.addStretch()
+        outer.addWidget(bulk)
+
         # --- Config section ---
         cfg = QGroupBox("Translation settings")
         form = QFormLayout(cfg)
@@ -276,6 +284,14 @@ class PreviewTabMixin:
         )
         if value:
             self.preview_source_edit.setText(normalize_path_text(value))
+
+    def _open_bulk_editor(self) -> None:
+        """Open the modal TranslationEditor on the translations.csv from the Setup tab."""
+        # Delegate to the ReviewTabMixin implementation already present on the same window.
+        self.edit_table()  # type: ignore[attr-defined]
+
+    def _open_translations_csv_externally(self) -> None:
+        self.edit_csv()  # type: ignore[attr-defined]
 
     def _choose_preview_output(self) -> None:
         value, _ = QFileDialog.getOpenFileName(
