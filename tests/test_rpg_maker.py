@@ -306,12 +306,36 @@ def test_extract_rpg_maker_www_data(tmp_path):
 
 
 def test_extract_rpg_maker_skips_editor_name_files(tmp_path):
-    map_infos = json.dumps([None, {"id": 1, "name": "MAP001"}])
     tilesets = json.dumps([None, {"id": 1, "name": "Outside", "tilesetNames": ["World_A1"]}])
     animations = json.dumps([None, {"id": 1, "name": "Hit", "animation1Name": "Hit1", "animation2Name": "Slash"}])
-    _make_rpg_game(tmp_path, {"MapInfos.json": map_infos, "Tilesets.json": tilesets, "Animations.json": animations})
+    _make_rpg_game(tmp_path, {"Tilesets.json": tilesets, "Animations.json": animations})
     entries = extract_rpg_maker(tmp_path)
     assert entries == []
+
+
+def test_extract_rpg_maker_map_infos_names(tmp_path):
+    map_infos = json.dumps([None, {"id": 1, "name": "森の入口"}, {"id": 2, "name": "城の中"}])
+    _make_rpg_game(tmp_path, {"MapInfos.json": map_infos})
+    entries = extract_rpg_maker(tmp_path)
+    assert {(e.source, e.context) for e in entries} == {
+        ("森の入口", "rpg_maker_map_name"),
+        ("城の中", "rpg_maker_map_name"),
+    }
+
+
+def test_extract_rpg_maker_troops_top_level_names(tmp_path):
+    troops = json.dumps([
+        None,
+        {
+            "id": 1,
+            "name": "ボス戦",
+            "members": [{"enemyId": 1, "x": 0, "y": 0}],
+            "pages": [{"conditions": {}, "list": [{"code": 0, "indent": 0, "parameters": []}]}],
+        },
+    ])
+    _make_rpg_game(tmp_path, {"Troops.json": troops})
+    entries = extract_rpg_maker(tmp_path)
+    assert any(e.source == "ボス戦" and e.context == "rpg_maker_troops_name" for e in entries)
 
 
 def test_extract_rpg_maker_event_text(tmp_path):

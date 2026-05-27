@@ -384,6 +384,30 @@ def _walk_database_json(value: Any, file: Path, prefix: str = "$") -> list[TextE
     return entries
 
 
+def _walk_map_infos_json(value: Any, file: Path, prefix: str = "$") -> list[TextEntry]:
+    """MapInfos.json: player-visible map names (save screen, current location UI)."""
+    entries: list[TextEntry] = []
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, dict):
+                _append_text_entry(entries, file, f"{prefix}[{index}].name", item.get("name"), "rpg_maker_map_name")
+    return entries
+
+
+def _walk_troops_top_level_names(value: Any, file: Path, prefix: str = "$") -> list[TextEntry]:
+    """Troops.json: top-level troop names (shown in battle encounter UI).
+
+    The recursive event walker handles each troop's pages.list event commands,
+    but skips the troop object's top-level `name` field. This extracts those.
+    """
+    entries: list[TextEntry] = []
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                _append_text_entry(entries, file, f"{prefix}[{index}].name", item.get("name"), "rpg_maker_troops_name")
+    return entries
+
+
 def _merge_dialogue_blocks(
     commands: list[Any],
     file: Path,
@@ -605,7 +629,14 @@ def _walk_json(value: Any, file: Path, prefix: str = "$", inherited_context: str
         return _walk_system_json(value, file, prefix)
     if file.name in RPG_MAKER_DATABASE_TEXT_FIELDS:
         return _walk_database_json(value, file, prefix)
-    if file.name == "CommonEvents.json" or file.name == "Troops.json" or file.name.startswith("Map"):
+    if file.name == "MapInfos.json":
+        return _walk_map_infos_json(value, file, prefix)
+    if file.name == "Troops.json":
+        # Troop top-level names + recursive event walk for pages.list dialogue
+        entries = _walk_troops_top_level_names(value, file, prefix)
+        entries.extend(_walk_event_json(value, file, prefix, inherited_context, plugin_text_extractor))
+        return entries
+    if file.name == "CommonEvents.json" or file.name.startswith("Map"):
         return _walk_event_json(value, file, prefix, inherited_context, plugin_text_extractor)
     return []
 
