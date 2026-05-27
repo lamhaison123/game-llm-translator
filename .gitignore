@@ -29,6 +29,7 @@ Thumbs.db
 .understand-anything/
 .understand-thing/
 docs/superpowers/
+bug.md
 
 # Release artifacts (uploaded to GitHub Releases, not the repo)
 game-translator-gui-*.zip
