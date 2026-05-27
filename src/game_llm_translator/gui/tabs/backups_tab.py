@@ -70,7 +70,7 @@ class BackupsTabMixin:
         memory_group = QGroupBox("⚠ Memory && translation cleanup (destructive — deletes generated data)")
         memory_group.setStyleSheet(
             "QGroupBox { border: 1px solid #c44; border-radius: 4px; margin-top: 8px; padding-top: 8px; }"
-            "QGroupBox::title { color: #c44; left: 8px; padding: 0 4px; }"
+            "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; color: #c44; left: 8px; padding: 0 4px; }"
         )
         m = QHBoxLayout(memory_group)
         m.addWidget(self._action_button("Clear Old Translation", self.clear_old_translation))

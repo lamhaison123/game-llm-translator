@@ -167,7 +167,7 @@ class TranslatorGUI(
         font = title.font()
         font.setPointSize(10)
         title.setFont(font)
-        title.setStyleSheet("color: #888;")
+        title.setStyleSheet("color: palette(placeholder-text);")
         title_block.addWidget(title)
         self.game_name_label = QLabel("(no game selected)")
         gfont = self.game_name_label.font()
@@ -181,7 +181,7 @@ class TranslatorGUI(
         sfont = self.step_label.font()
         sfont.setPointSize(11)
         self.step_label.setFont(sfont)
-        self.step_label.setStyleSheet("color: #5b6cff;")
+        self.step_label.setStyleSheet("color: palette(highlight);")
         header.addWidget(self.step_label)
         header.addSpacing(12)
         self.theme_button = QPushButton("Toggle theme")
@@ -302,7 +302,7 @@ class TranslatorGUI(
         " border: none; padding: 6px 14px; border-radius: 4px; }"
         "QPushButton:hover:enabled { background-color: #4858e0; }"
         "QPushButton:pressed:enabled { background-color: #3a48b8; }"
-        "QPushButton:disabled { background-color: #b0b6c8; color: #eee; }"
+        "QPushButton:disabled { background-color: #6f7693; color: #d8dcec; }"
     )
 
     def _primary_button(self, text: str, slot: Callable[[], None]) -> QPushButton:

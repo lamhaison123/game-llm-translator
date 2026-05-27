@@ -143,6 +143,9 @@ class PreviewTabMixin:
         self.preview_workers_spin.setValue(int(self.config.get("workers", 1)))
         form.addRow("Workers:", self.preview_workers_spin)
 
+        self.preview_restart_check = QCheckBox("Ignore existing translations and start over")
+        form.addRow("", self.preview_restart_check)
+
         outer.addWidget(cfg)
 
         # --- Action buttons ---
@@ -418,7 +421,7 @@ class PreviewTabMixin:
             save_memory=self.save_memory_check.isChecked(),
             glossary_path=Path(gp) if gp else None,
             correction_table_path=Path(cp) if cp else None,
-            restart=True,
+            restart=self.preview_restart_check.isChecked(),
             on_log=self._log,  # type: ignore[assignment]
             stop_event=self.stop_requested,
             on_batch_results=lambda batch: self.signals.result_batch.emit(batch),

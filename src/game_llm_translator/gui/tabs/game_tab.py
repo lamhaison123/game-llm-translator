@@ -62,10 +62,8 @@ class GameTabMixin:
         self.game_type_combo.setCurrentText(normalize_gui_game_type(str(self.config.get("game_type", "rpg-maker-mv"))))
         form.addRow("Game type", self.game_type_combo)
 
-        # Auto-derived working paths — collapsed by default to reduce noise.
+        # Auto-derived working paths — shown read-only for visibility.
         paths_group = QGroupBox("Working paths (auto-derived)")
-        paths_group.setCheckable(True)
-        paths_group.setChecked(False)
         paths_form = QFormLayout(paths_group)
 
         self.texts_csv_edit = QLineEdit(normalize_path_text(str(self.config.get("texts_csv", "work/texts.csv"))))
