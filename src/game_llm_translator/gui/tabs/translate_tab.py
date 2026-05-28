@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from ...auto import auto_translate_game
 from ...csv_store import load_results, save_entries, save_results
 from ...models import TextEntry, TranslationResult, text_identity
-from ...rpg_maker import apply_rpg_maker, normalize_gui_game_type, extract_rpg_maker_mv, extract_rpg_maker_mz
+from ...rpg_maker import apply_rpg_maker, normalize_gui_game_type, extract_rpg_maker_mv, extract_rpg_maker_mz, extract_rpg_maker_vxace
 from ...translate_pipeline import TranslateOptions, run_translate
 from ...validate import needs_retry
 from ...xunity import apply_xunity, extract_xunity
@@ -139,7 +139,10 @@ class TranslateTabMixin:
     def _extract_entries(self, game_dir: Path, game_type: str) -> list:
         if game_type == "unity-xunity":
             return extract_xunity(game_dir)
-        if normalize_gui_game_type(game_type) == "rpg-maker-mz":
+        normalized = normalize_gui_game_type(game_type)
+        if normalized == "rpg-maker-vxace":
+            return extract_rpg_maker_vxace(game_dir)
+        if normalized == "rpg-maker-mz":
             return extract_rpg_maker_mz(game_dir)
         return extract_rpg_maker_mv(game_dir)
 

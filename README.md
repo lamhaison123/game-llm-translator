@@ -358,8 +358,8 @@ Output: `dist/game-translator-gui.app`.
 |---|---|---|---|---|
 | RPG Maker MV | Yes | Yes | Yes | full support |
 | RPG Maker MZ | Yes | Yes | Yes | full support + plugin command 357 + custom subdirectory extraction (PKD_PhoneMenu, etc.) |
+| RPG Maker VX Ace | Yes | Yes | Yes | full support (`.rvdata2` Ruby Marshal codec, vendored from [RPGMTL](https://github.com/MizaGBF/RPGMTL) MIT) |
 | Unity (XUnity AutoTranslator) | Yes | Yes | Yes | via `Translation/{lang}/Text/*.txt` |
-| RPG Maker VX Ace | Yes | No | No | detect only (`.rvdata2` parsing needed) |
 | RPG Maker VX / XP | Yes | No | No | detect only |
 
 ## License

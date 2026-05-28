@@ -12,7 +12,7 @@ from .auto import analyze_game, auto_translate_game, write_analysis_report
 from .config import load_settings
 from .csv_store import load_entries, load_results, save_entries, save_results
 from .editor import open_file_editor
-from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz
+from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz, extract_rpg_maker_vxace
 from .xunity import apply_xunity, extract_xunity
 from .unity import extract_unity
 from .models import TranslationResult, TextEntry, text_identity
@@ -21,11 +21,11 @@ from .translate_pipeline import TranslateOptions, run_translate
 app = typer.Typer(help="Translate RPG Maker and Unity game text via LLM API.")
 console = Console()
 
-GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "unity", "unity-xunity"]
+GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "rpg-maker-vxace", "unity", "unity-xunity"]
 
 
 def _is_rpg_maker_type(game_type: GameType) -> bool:
-    return game_type in {"rpg-maker", "rpg-maker-mv", "rpg-maker-mz"}
+    return game_type in {"rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "rpg-maker-vxace"}
 
 
 def _is_xunity_type(game_type: GameType) -> bool:
@@ -37,13 +37,15 @@ def _extract(game_type: GameType, game_dir: Path):
         return extract_rpg_maker_mv(game_dir)
     if game_type == "rpg-maker-mz":
         return extract_rpg_maker_mz(game_dir)
+    if game_type == "rpg-maker-vxace":
+        return extract_rpg_maker_vxace(game_dir)
     if _is_rpg_maker_type(game_type):
         return extract_rpg_maker(game_dir)
     if game_type == "unity-xunity":
         return extract_xunity(game_dir)
     if game_type == "unity":
         return extract_unity(game_dir)
-    raise typer.BadParameter("game_type must be rpg-maker, rpg-maker-mv, rpg-maker-mz, unity-xunity, or unity")
+    raise typer.BadParameter("game_type must be rpg-maker, rpg-maker-mv, rpg-maker-mz, rpg-maker-vxace, unity-xunity, or unity")
 
 
 @app.command()
