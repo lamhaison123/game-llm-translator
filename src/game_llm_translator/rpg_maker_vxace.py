@@ -28,16 +28,16 @@ from .vendor.rm_marshal_core import MC, ME
 # ---- file inventory ----
 
 _DATA_FILES_DATABASE: dict[str, dict[str, str]] = {
-    "Actors.rvdata2":    {"name": "name", "nickname": "nickname", "description": "description", "note": "note"},
-    "Classes.rvdata2":   {"name": "name", "note": "note"},
-    "Skills.rvdata2":    {"name": "name", "description": "description", "message1": "message", "message2": "message", "note": "note"},
-    "Items.rvdata2":     {"name": "name", "description": "description", "note": "note"},
-    "Weapons.rvdata2":   {"name": "name", "description": "description", "note": "note"},
-    "Armors.rvdata2":    {"name": "name", "description": "description", "note": "note"},
-    "Enemies.rvdata2":   {"name": "name", "note": "note"},
-    "States.rvdata2":    {"name": "name", "message1": "message", "message2": "message", "message3": "message", "message4": "message", "note": "note"},
-    "Animations.rvdata2": {"name": "name"},
-    "Tilesets.rvdata2":  {"name": "name", "note": "note"},
+    "actors.rvdata2":    {"name": "name", "nickname": "nickname", "profile": "profile", "description": "description", "note": "note"},
+    "classes.rvdata2":   {"name": "name", "note": "note"},
+    "skills.rvdata2":    {"name": "name", "description": "description", "message1": "message", "message2": "message", "note": "note"},
+    "items.rvdata2":     {"name": "name", "description": "description", "note": "note"},
+    "weapons.rvdata2":   {"name": "name", "description": "description", "note": "note"},
+    "armors.rvdata2":    {"name": "name", "description": "description", "note": "note"},
+    "enemies.rvdata2":   {"name": "name", "note": "note"},
+    "states.rvdata2":    {"name": "name", "message1": "message", "message2": "message", "message3": "message", "message4": "message", "note": "note"},
+    "animations.rvdata2": {"name": "name"},
+    "tilesets.rvdata2":  {"name": "name", "note": "note"},
 }
 
 # VX Ace event commands worth translating. Differs from MV/MZ:
@@ -48,7 +48,9 @@ _DATA_FILES_DATABASE: dict[str, dict[str, str]] = {
 #   - 108/408: comment
 #   - 320: change actor name (parameters[1])
 #   - 324: change actor nickname (parameters[1])
-#   - 355/655: Ruby script (NOT extracted by default — too risky to translate auto)
+#   - 325: change actor profile (parameters[1])
+#   - 355/655: Ruby script (extracted when payload contains CJK; LLM rewrite is risky,
+#             so callers should review these entries before applying)
 _EVENT_CONTINUATION_PARENT_CODES = {101, 105}  # 401 belongs to 101, 405 to 105
 
 # Strings shorter than this with no JP/CJK characters are skipped (likely identifier).
@@ -262,10 +264,10 @@ def _walk_event_list(list_me: ME, file: Path, prefix: str, context_prefix: str, 
                     file=file, key=f"{cmd_prefix}[0]", source=s,
                     context=f"{context_prefix}_comment", context_text=context_text,
                 ))
-        elif code in (320, 324) and len(params) >= 2 and _is_string(params[1]):
+        elif code in (320, 324, 325) and len(params) >= 2 and _is_string(params[1]):
             s = _decode_string(params[1])
             if s and _is_translatable(s):
-                ctx_suffix = "actor_name" if code == 320 else "actor_nickname"
+                ctx_suffix = {320: "actor_name", 324: "actor_nickname", 325: "actor_profile"}[code]
                 entries.append(TextEntry(
                     file=file, key=f"{cmd_prefix}[1]", source=s,
                     context=f"{context_prefix}_{ctx_suffix}", context_text=context_text,
@@ -400,12 +402,15 @@ _SYSTEM_ARRAY_FIELDS = (
     ("skill_types", "rpg_maker_system_skill_type"),
     ("weapon_types", "rpg_maker_system_weapon_type"),
     ("armor_types", "rpg_maker_system_armor_type"),
+    ("switches", "rpg_maker_system_switch"),
+    ("variables", "rpg_maker_system_variable"),
 )
 _TERMS_FIELDS = (
     ("basic", "rpg_maker_terms_basic"),
     ("params", "rpg_maker_terms_params"),
     ("etypes", "rpg_maker_terms_etypes"),
     ("commands", "rpg_maker_terms_commands"),
+    ("messages", "rpg_maker_terms_messages"),
 )
 
 
@@ -477,29 +482,29 @@ def extract_rpg_maker_vxace(game_dir: Path) -> list[TextEntry]:
     for path in sorted(data_dir.iterdir()):
         if not path.is_file() or path.suffix.lower() != ".rvdata2":
             continue
-        name = path.name
+        name_lower = path.name.lower()
         try:
             mc = MC.load(path.read_bytes())
         except Exception as exc:
-            log_event(f"Failed to load {name}: {exc}", level="WARN")
+            log_event(f"Failed to load {path.name}: {exc}", level="WARN")
             continue
         root = mc.root
         if root is None:
             continue
-        if name == "System.rvdata2":
+        if name_lower == "system.rvdata2":
             _walk_system(root, path, entries)
-        elif name == "MapInfos.rvdata2":
+        elif name_lower == "mapinfos.rvdata2":
             _walk_mapinfos(root, path, entries)
-        elif name == "CommonEvents.rvdata2":
+        elif name_lower == "commonevents.rvdata2":
             _walk_common_events(root, path, entries)
-        elif name == "Troops.rvdata2":
+        elif name_lower == "troops.rvdata2":
             _walk_troops(root, path, entries)
-        elif name == "Scripts.rvdata2":
+        elif name_lower == "scripts.rvdata2":
             # Embedded Ruby source; deferred to a future pass.
             continue
-        elif name in _DATA_FILES_DATABASE:
-            _walk_database(root, path, _DATA_FILES_DATABASE[name], entries)
-        elif re.fullmatch(r"Map\d{3,4}\.rvdata2", name):
+        elif name_lower in _DATA_FILES_DATABASE:
+            _walk_database(root, path, _DATA_FILES_DATABASE[name_lower], entries)
+        elif re.fullmatch(r"map\d{3,4}\.rvdata2", name_lower):
             _walk_map(root, path, entries)
         # else: unknown file, skip
     return entries
@@ -528,7 +533,7 @@ def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) ->
     """
     grouped: dict[Path, list[TranslationResult]] = {}
     for r in results:
-        if not r.target or r.target == r.source:
+        if r.target is None or r.target == r.source:
             continue
         grouped.setdefault(r.file, []).append(r)
 

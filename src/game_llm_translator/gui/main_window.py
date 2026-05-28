@@ -345,7 +345,7 @@ class TranslatorGUI(
         return path
 
     def _game_data_dir(self, game_dir: Path) -> Path:
-        for c in (game_dir / "www" / "data", game_dir / "data"):
+        for c in (game_dir / "www" / "data", game_dir / "data", game_dir / "Data"):
             if c.exists():
                 return c
         raise ValueError(f"No data folder found in {game_dir}")

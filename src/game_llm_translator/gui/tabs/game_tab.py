@@ -113,10 +113,7 @@ class GameTabMixin:
             self.signals.set_text.emit("scan_summary", "Scanning...")
             report = analyze_game(game_dir, provider, target_lang)
             self._set_default_work_paths(game_dir, use_signals=True)
-            if report["engine"] in {"mv", "mz", "mv-mz"}:
-                self.signals.set_text.emit("game_type", engine_to_gui_game_type(str(report["engine"])))
-            elif report["engine"] == "unity-xunity":
-                self.signals.set_text.emit("game_type", "unity-xunity")
+            self.signals.set_text.emit("game_type", engine_to_gui_game_type(str(report["engine"])))
             write_analysis_report(report, game_dir / "translator_work" / "analysis.json")
             summary = f"Engine: {report['engine']} | JSON files: {report['json_files']} | Text entries: {report['text_entries']} | Data folder: {report['data_dir']}"
             if report.get("unsupported_reason"):

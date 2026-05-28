@@ -133,8 +133,10 @@ class MC:
 
     def _read_instancevariable(self, token, handle):
         me = self._process_token(handle, ivar=True)
-        # Reserve a slot for the ivar wrapper itself
-        self.objtable.append(ME(self, b"I", False))
+        # The I-wrapper consumes one objtable slot. Store the wrapped element
+        # itself so later @-links resolve to a dumpable ME (its dump writes the
+        # I prefix because attributes is set), not an inert placeholder.
+        self.objtable.append(me)
         return me
 
     def _read_string(self, token, handle):
