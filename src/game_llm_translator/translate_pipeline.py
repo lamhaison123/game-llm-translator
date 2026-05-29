@@ -14,7 +14,7 @@ from .glossary import apply_correction_table, build_auto_glossary, format_glossa
 from .llm import LLMProvider, _NAMEBOX_PREFIX_RE, _replace_untranslated_namebox_names, extract_namebox_names, make_provider, postprocess_translation, translate_namebox_names
 from .models import TextEntry, TranslationResult, text_identity
 from .translation_memory import global_memory_path, load_memory, lookup_memory_value, save_memory
-from .validate import check_noun_consistency, format_noun_warnings, translation_warnings
+from .validate import check_noun_consistency, format_noun_warnings, repair_translation_syntax, translation_warnings
 
 LogFn = Callable[[str], None]
 ProgressFn = Callable[[int, int], None]
@@ -618,6 +618,14 @@ def run_translate(
         if missed:
             _log(options, f"WARN: LLM missed {missed}/{len(batch_results)} entries (fallback to source)")
         expanded = _finalize_batch_results(batch_results)
+        expanded = [
+            TranslationResult(
+                item.file, item.key, item.source,
+                repair_translation_syntax(item.source, item.target, item.context),
+                item.context, sub_keys=item.sub_keys, extra=item.extra,
+            )
+            for item in expanded
+        ]
         for item in expanded:
             issues = translation_warnings(item.source, item.target, item.context)
             if issues:

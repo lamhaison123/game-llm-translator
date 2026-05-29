@@ -7,7 +7,7 @@ from game_llm_translator.validate import (
     check_noun_consistency,
     format_noun_warnings,
     is_cjk_leak,
-    needs_retry,
+    repair_translation_syntax,
     translation_warnings,
 )
 
@@ -53,9 +53,29 @@ def test_vxace_validation_preserves_angle_tags():
     assert any("missing tag" in w for w in warnings)
 
 
+def test_vxace_validation_accepts_translated_angle_tag():
+    assert translation_warnings("<战斗结束时退队>", "<Rời đội khi kết thúc chiến đấu>", "rpg_maker_vxace_note") == []
+
+
 def test_vxace_script_string_rejects_unescaped_newline():
     warnings = translation_warnings("精神值变化:", "Dòng 1\nDòng 2", "rpg_maker_map_script_string")
     assert any("script string contains newline" in w for w in warnings)
+
+
+def test_repair_translation_syntax_appends_missing_control_codes():
+    fixed = repair_translation_syntax("寄存\\C[23]\\N[7]", "Gửi gắm", "rpg_maker_map_choice")
+    assert "\\C[23]" in fixed
+    assert "\\N[7]" in fixed
+
+
+def test_repair_translation_syntax_preserves_translated_note_tag():
+    fixed = repair_translation_syntax("<战斗结束时退队>", "<Rời đội khi kết thúc chiến đấu>", "rpg_maker_vxace_note")
+    assert fixed == "<Rời đội khi kết thúc chiến đấu>"
+
+
+def test_repair_translation_syntax_appends_missing_percent_placeholder():
+    fixed = repair_translation_syntax("下一%s", "Tiếp theo", "rpg_maker_vxace_script_vocab_string")
+    assert fixed == "Tiếp theo%s"
 
 
 def test_noun_consistency_no_inconsistency():

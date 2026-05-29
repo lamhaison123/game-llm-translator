@@ -113,6 +113,32 @@ def _missing_tokens(source: str, target: str, pattern: re.Pattern[str], label: s
     return warnings
 
 
+def repair_translation_syntax(source: str, target: str, context: str = "") -> str:
+    """Best-effort repair for syntax tokens LLMs commonly drop.
+
+    This only appends exact source tokens; it does not translate content.
+    """
+    if not target.strip() or target == source:
+        return target
+    repaired = target
+    for token in _CONTROL_CODE_RE.findall(source):
+        if token not in repaired:
+            repaired += token
+    for token in re.findall(r"%[sdfox]", source):
+        if token not in repaired:
+            repaired += token
+    if context == "rpg_maker_vxace_note":
+        for token in _ANGLE_TAG_RE.findall(source):
+            if token not in repaired:
+                if repaired.startswith("<") and repaired.endswith(">"):
+                    inner = repaired[1:-1]
+                    src_inner = token[1:-1]
+                    if _CJK_RE.search(src_inner) and not _CJK_RE.search(inner):
+                        continue
+                repaired += token
+    return repaired
+
+
 def translation_warnings(source: str, target: str, context: str = "") -> list[str]:
     """Return non-fatal quality warnings for a source/target pair."""
     if not target.strip() or target == source:
@@ -134,7 +160,10 @@ def translation_warnings(source: str, target: str, context: str = "") -> list[st
         warnings.append("missing YEP_MessageCore namebox prefix")
     warnings.extend(_missing_tokens(source, target, _CONTROL_CODE_RE, "control code"))
     if context == "rpg_maker_vxace_note":
-        warnings.extend(_missing_tokens(source, target, _ANGLE_TAG_RE, "tag"))
+        source_tags = _ANGLE_TAG_RE.findall(source)
+        target_tags = _ANGLE_TAG_RE.findall(target)
+        if len(target_tags) < len(source_tags):
+            warnings.extend(_missing_tokens(source, target, _ANGLE_TAG_RE, "tag"))
     if context.endswith("_script_string") and "\n" in target:
         warnings.append("script string contains newline")
     source_name = _namebox_visible_name(source)
