@@ -33,10 +33,12 @@ from PySide6.QtWidgets import (
 )
 
 from ...csv_store import load_entries, load_results, save_results
+from ...editor import open_file_editor
 from ...llm import _context_hint
 from ...models import TextEntry, TranslationResult, text_identity
 from ...translate_pipeline import TranslateOptions, run_translate
 from ...validate import translation_warnings
+from ..editor import TranslationEditor
 from ..paths import normalize_path_text
 
 
@@ -100,9 +102,8 @@ class PreviewTabMixin:
     _path_picker: object
     _action_button: object
     _safe_button: object
-    # Provided by ReviewTabMixin (sibling mixin on TranslatorGUI):
-    edit_table: Callable[[], None]
-    edit_csv: Callable[[], None]
+    # Provided by TranslateTabMixin (sibling on TranslatorGUI):
+    retry_flagged_rows: Callable[[], None]
 
     def _build_preview_tab(self) -> QWidget:
         tab = QWidget()
@@ -294,11 +295,23 @@ class PreviewTabMixin:
 
     def _open_bulk_editor(self) -> None:
         """Open the modal TranslationEditor on the translations.csv from the Setup tab."""
-        # Delegate to the ReviewTabMixin implementation already present on the same window.
-        self.edit_table()
+        from PySide6.QtWidgets import QMessageBox
+        path = Path(self.translations_csv_edit.text())
+        if not path.exists():
+            QMessageBox.warning(self, "Review/Edit", f"File not found: {path}")
+            return
+        dlg = TranslationEditor(self, path)
+        dlg.exec_()
+        if getattr(dlg, "retry_requested", False):
+            self.retry_flagged_rows()
 
     def _open_translations_csv_externally(self) -> None:
-        self.edit_csv()
+        from PySide6.QtWidgets import QMessageBox
+        path = Path(self.translations_csv_edit.text())
+        if not path.exists():
+            QMessageBox.warning(self, "Open CSV", f"File not found: {path}")
+            return
+        open_file_editor(path)
 
     def _choose_preview_output(self) -> None:
         value, _ = QFileDialog.getOpenFileName(
