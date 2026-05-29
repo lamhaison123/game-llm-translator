@@ -160,7 +160,7 @@ class PreviewTabMixin:
         self.preview_stop_btn = self._safe_button("Stop", self._preview_stop)
         self.preview_stop_btn.setEnabled(False)
         self.preview_save_btn = self._safe_button("Save CSV", self._preview_save)
-        self.preview_load_btn = self._safe_button("Load CSV", self._preview_load)
+        self.preview_load_btn = self._safe_button("Load CSV", lambda: self._preview_load())
         actions.addWidget(self.preview_start_btn)
         actions.addWidget(self.preview_stop_btn)
         actions.addWidget(self.preview_save_btn)
