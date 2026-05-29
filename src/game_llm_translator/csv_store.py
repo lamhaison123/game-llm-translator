@@ -46,12 +46,25 @@ def load_entries(file: Path) -> list[TextEntry]:
         raise ValueError(f"Failed to load entries from {file}: {exc}") from exc
 
 
+_RESULT_FIELDS = ["file", "key", "source", "target", "context", "sub_keys"]
+
+
 def save_results(results: list[TranslationResult], file: Path) -> None:
+    extra_keys: list[str] = []
+    for item in results:
+        for k in item.extra:
+            if k not in _RESULT_FIELDS and k not in extra_keys:
+                extra_keys.append(k)
+    fieldnames = _RESULT_FIELDS + extra_keys
+
     def _write(fp: IO[str]) -> None:
-        writer = csv.DictWriter(fp, fieldnames=["file", "key", "source", "target", "context", "sub_keys"])
+        writer = csv.DictWriter(fp, fieldnames=fieldnames)
         writer.writeheader()
         for item in results:
-            writer.writerow({"file": str(item.file), "key": item.key, "source": item.source, "target": item.target, "context": item.context, "sub_keys": "\x1f".join(item.sub_keys) if item.sub_keys else ""})
+            row = {"file": str(item.file), "key": item.key, "source": item.source, "target": item.target, "context": item.context, "sub_keys": "\x1f".join(item.sub_keys) if item.sub_keys else ""}
+            for k in extra_keys:
+                row[k] = item.extra.get(k, "")
+            writer.writerow(row)
     _atomic_write_text(file, _write)
 
 
@@ -59,7 +72,11 @@ def load_results(file: Path) -> list[TranslationResult]:
     try:
         with file.open("r", newline="", encoding="utf-8-sig") as fp:
             return [
-                TranslationResult(Path(row["file"]), row["key"], row["source"], row["target"], row.get("context", ""), sub_keys=row.get("sub_keys", "").split("\x1f") if row.get("sub_keys", "") else [])
+                TranslationResult(
+                    Path(row["file"]), row["key"], row["source"], row["target"], row.get("context", ""),
+                    sub_keys=row.get("sub_keys", "").split("\x1f") if row.get("sub_keys", "") else [],
+                    extra={k: v for k, v in row.items() if k is not None and k not in _RESULT_FIELDS},
+                )
                 for row in csv.DictReader(fp)
                 if row.get("file") and row.get("key") and row.get("source") is not None and row.get("target") is not None
             ]

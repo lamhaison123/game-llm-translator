@@ -20,6 +20,7 @@ class TranslationResult:
     target: str
     context: str = ""
     sub_keys: list[str] = field(default_factory=list)
+    extra: dict[str, str] = field(default_factory=dict)
 
 
 def text_identity(file: Path | str, key: str) -> tuple[str, str]:

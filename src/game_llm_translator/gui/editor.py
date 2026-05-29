@@ -35,6 +35,7 @@ class TranslationEditor(QDialog):
         self.filtered_indices: list[int] = []
         self.current_index: int | None = None
         self.retry_requested: bool = False
+        self._dirty: bool = False
 
         self._build()
         self._load()
@@ -196,7 +197,15 @@ class TranslationEditor(QDialog):
         if self.current_index is None:
             return
         row = self.rows[self.current_index]
-        row["target"] = self.target_box.toPlainText().rstrip("\n")
+        new_target = self.target_box.toPlainText().rstrip("\n")
+        old_target = row.get("target", "")
+        if new_target != old_target.rstrip("\n"):
+            row["target"] = new_target
+            self._dirty = True
+        else:
+            # Keep the stored value verbatim, but ensure the key exists so the
+            # tree-update read below (and _save_to_disk) can never KeyError.
+            row.setdefault("target", old_target)
         if update_tree:
             for i in range(self.tree.topLevelItemCount()):
                 it = self.tree.topLevelItem(i)
@@ -218,11 +227,52 @@ class TranslationEditor(QDialog):
     def _save_to_disk(self) -> None:
         self._save_current(update_tree=True)
         fieldnames = ["file", "key", "source", "target", "context", "sub_keys"]
+        for row in self.rows:
+            for k in row:
+                if k is not None and k not in fieldnames:
+                    fieldnames.append(k)
         with self.path.open("w", newline="", encoding="utf-8") as fp:
             w = csv.DictWriter(fp, fieldnames=fieldnames)
             w.writeheader()
             for row in self.rows:
                 w.writerow({n: row.get(n, "") for n in fieldnames})
+        self._dirty = False
+
+    def _confirm_close(self) -> bool:
+        """Flush the current row and, if edits are unsaved, prompt to save.
+
+        Returns True if the dialog may close, False to keep it open.
+        """
+        self._save_current(update_tree=False)
+        if not self._dirty:
+            return True
+        reply = QMessageBox.question(
+            self, "Unsaved changes",
+            "You have unsaved edits. Save to CSV before closing?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Cancel:
+            return False
+        if reply == QMessageBox.StandardButton.Save:
+            try:
+                self._save_to_disk()
+            except OSError as exc:
+                QMessageBox.warning(self, "Save CSV", f"Could not save: {exc}")
+                return False
+        return True
+
+    def closeEvent(self, event) -> None:
+        if self._confirm_close():
+            event.accept()
+        else:
+            event.ignore()
+
+    def reject(self) -> None:
+        # Esc / reject() bypasses closeEvent under exec(); route through the same guard.
+        if self._confirm_close():
+            super().reject()
 
     def _retry_flagged(self) -> None:
         self._save_current(update_tree=True)

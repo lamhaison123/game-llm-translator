@@ -56,9 +56,9 @@ _STATUS_ICONS = {
 
 
 class PreviewRow:
-    __slots__ = ("idx", "file", "key", "source", "target", "context", "sub_keys", "manually_edited", "warnings")
+    __slots__ = ("idx", "file", "key", "source", "target", "context", "sub_keys", "extra", "manually_edited", "warnings")
 
-    def __init__(self, idx: int, file: str, key: str, source: str, target: str, context: str, sub_keys: list[str] | None = None) -> None:
+    def __init__(self, idx: int, file: str, key: str, source: str, target: str, context: str, sub_keys: list[str] | None = None, extra: dict[str, str] | None = None) -> None:
         self.idx = idx
         self.file = file
         self.key = key
@@ -66,6 +66,7 @@ class PreviewRow:
         self.target = target
         self.context = context
         self.sub_keys = sub_keys or []
+        self.extra = extra or {}
         self.manually_edited = False
         self.warnings: list[str] = []
 
@@ -296,25 +297,64 @@ class PreviewTabMixin:
     def _open_bulk_editor(self) -> None:
         """Open the modal TranslationEditor on the translations.csv from the Setup tab."""
         from PySide6.QtWidgets import QMessageBox
-        path = Path(self.translations_csv_edit.text())
+        text = self.translations_csv_edit.text().strip()
+        if not text:
+            QMessageBox.warning(self, "Review/Edit", "No translations CSV path specified.")
+            return
+        path = Path(text)
         if not path.exists():
             QMessageBox.warning(self, "Review/Edit", f"File not found: {path}")
             return
+        if self._preview_dirty:
+            reply = QMessageBox.question(
+                self, "Unsaved changes",
+                "Preview has unsaved edits the bulk editor will not see, and saving "
+                "in the bulk editor can be overwritten by a later Save CSV here. "
+                "Open the bulk editor anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         dlg = TranslationEditor(self, path)
-        dlg.exec_()
+        dlg.exec()
+        # The editor may have rewritten `path` on disk. If that's the file the
+        # preview is currently showing, reload so a later preview "Save CSV"
+        # can't silently clobber the editor's edits with stale rows.
+        if self._preview_rows and (
+            self._same_file(path, self.preview_source_edit.text())
+            or self._same_file(path, self.preview_output_edit.text())
+        ):
+            self._preview_load_path(path)
         if getattr(dlg, "retry_requested", False):
             self.retry_flagged_rows()
 
+    @staticmethod
+    def _same_file(path: Path, other_text: str) -> bool:
+        other = other_text.strip()
+        if not other:
+            return False
+        try:
+            return path.resolve() == Path(other).resolve()
+        except OSError:
+            return path == Path(other)
+
     def _open_translations_csv_externally(self) -> None:
         from PySide6.QtWidgets import QMessageBox
-        path = Path(self.translations_csv_edit.text())
+        text = self.translations_csv_edit.text().strip()
+        if not text:
+            QMessageBox.warning(self, "Open CSV", "No translations CSV path specified.")
+            return
+        path = Path(text)
         if not path.exists():
             QMessageBox.warning(self, "Open CSV", f"File not found: {path}")
             return
-        open_file_editor(path)
+        try:
+            open_file_editor(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Open CSV", f"Could not open external editor: {exc}")
 
     def _choose_preview_output(self) -> None:
-        value, _ = QFileDialog.getOpenFileName(
+        value, _ = QFileDialog.getSaveFileName(
             self, "Select output CSV", self.preview_output_edit.text(),
             "CSV files (*.csv);;All files (*)",
         )
@@ -350,12 +390,16 @@ class PreviewTabMixin:
             QMessageBox.warning(self, "Load CSV", f"File not found: {csv_path}")
             return
 
+        self._preview_load_path(csv_path)
+
+    def _preview_load_path(self, csv_path: Path) -> bool:
+        """Load results from csv_path into the preview model. Returns False on failure."""
         try:
             results = load_results(csv_path)
         except Exception as exc:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Load CSV", f"Failed to load: {exc}")
-            return
+            return False
 
         self._preview_rows = []
         self._preview_filtered = []
@@ -366,13 +410,14 @@ class PreviewTabMixin:
         self.preview_target_box.clear()
         self.preview_warning_label.clear()
         for i, r in enumerate(results):
-            row = PreviewRow(i, str(r.file), r.key, r.source, r.target, r.context, r.sub_keys)
+            row = PreviewRow(i, str(r.file), r.key, r.source, r.target, r.context, r.sub_keys, r.extra)
             self._preview_rows.append(row)
             self._preview_entry_to_row[text_identity(Path(row.file), row.key)] = row.idx
         self._preview_dirty = False
         self._preview_populate_contexts()
         self._preview_apply_filter()
         self._preview_update_progress()
+        return True
 
     # ------------------------------------------------------------------
     # Start translation
@@ -542,6 +587,10 @@ class PreviewTabMixin:
             self._preview_add_tree_item(row)
 
         self.preview_count_label.setText(f"Showing {len(self._preview_filtered)}/{len(self._preview_rows)}")
+        self._preview_current_idx = None
+        self.preview_source_box.clear()
+        self.preview_target_box.clear()
+        self.preview_warning_label.clear()
 
     def _preview_add_tree_item(self, row: PreviewRow) -> None:
         icon = _STATUS_ICONS.get(row.status(), " ")
@@ -674,16 +723,19 @@ class PreviewTabMixin:
         self._preview_save_current(update_tree=True)
 
     def _preview_next_warning(self) -> None:
-        if not self._preview_rows:
+        if not self._preview_filtered:
             return
-        start = (self._preview_current_idx or 0) + 1
-        for i in range(start, len(self._preview_rows)):
-            if self._preview_rows[i].warnings:
-                self._preview_select_row(i)
-                return
-        for i in range(0, start):
-            if self._preview_rows[i].warnings:
-                self._preview_select_row(i)
+        # Walk only rows currently visible in the tree, in display order, wrapping
+        # around from the current selection. Jumping to a filtered-out row would
+        # silently fail since _preview_select_row only matches visible items.
+        if self._preview_current_idx in self._preview_filtered:
+            pos = self._preview_filtered.index(self._preview_current_idx) + 1
+        else:
+            pos = 0
+        order = self._preview_filtered[pos:] + self._preview_filtered[:pos]
+        for idx in order:
+            if self._preview_rows[idx].warnings:
+                self._preview_select_row(idx)
                 return
 
     def _preview_select_row(self, idx: int) -> None:
@@ -699,6 +751,10 @@ class PreviewTabMixin:
     # ------------------------------------------------------------------
 
     def _preview_save(self) -> None:
+        if self.current_worker is not None and self.current_worker.is_alive():
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Save CSV", "A translation task is running; wait for it to finish before saving.")
+            return
         self._preview_save_current(update_tree=False)
         output_path = self.preview_output_edit.text().strip()
         if not output_path:
@@ -709,7 +765,7 @@ class PreviewTabMixin:
         results = [
             TranslationResult(
                 file=Path(r.file), key=r.key, source=r.source,
-                target=r.target, context=r.context, sub_keys=r.sub_keys,
+                target=r.target, context=r.context, sub_keys=r.sub_keys, extra=r.extra,
             )
             for r in self._preview_rows
         ]

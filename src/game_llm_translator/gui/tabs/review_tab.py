@@ -48,4 +48,7 @@ class ReviewTabMixin:
         if not path.exists():
             QMessageBox.warning(self, "Open CSV", f"File not found: {path}")
             return
-        open_file_editor(path)
+        try:
+            open_file_editor(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Open CSV", f"Could not open external editor: {exc}")
