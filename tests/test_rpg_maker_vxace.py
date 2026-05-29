@@ -6,6 +6,7 @@ the need to vendor real game fixtures.
 """
 from __future__ import annotations
 
+import zlib
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,8 @@ from game_llm_translator.rpg_maker_vxace import (
     _replace_ruby_string_literal,
     _resolve_path,
     _ruby_string_literals,
+    _decode_script_source,
+    _script_record_parts,
     apply_rpg_maker_vxace,
     extract_rpg_maker_vxace,
 )
@@ -155,6 +158,20 @@ def _make_map_file(commands: list[tuple[int, list]]) -> bytes:
         ("events", _hash_me(mc, [(1, _int_me(mc, 1), event)])),
     ])
     return _build(mc, map_obj)
+
+
+def _make_scripts_file(scripts: list[tuple[str, str]]) -> bytes:
+    mc = MC()
+    items: list[ME] = []
+    for i, (name, source) in enumerate(scripts):
+        items.append(_array_me(mc, [
+            _int_me(mc, 10_000 + i),
+            _str_me(mc, name),
+            _str_me(mc, zlib.compress(source.encode("utf-8")).decode("latin1")),
+        ]))
+        # _str_me encodes text as UTF-8, but script payload is binary compressed
+        items[-1].data[2].at().data = zlib.compress(source.encode("utf-8"))
+    return _build(mc, _array_me(mc, items))
 
 
 def _write_data_files(tmp: Path, files: dict[str, bytes]) -> Path:
@@ -405,10 +422,30 @@ def test_round_trip_byte_equal_for_unchanged_string(tmp_path: Path):
     assert redumped == payload
 
 
-def test_extract_skips_scripts_rvdata2(tmp_path: Path):
-    # Even if a "Scripts.rvdata2" file exists, we don't try to extract from it.
-    fake = b"\x04\x08\"\x06A"  # tiny invalid-ish payload
+def test_extract_scripts_vocabulary_strings(tmp_path: Path):
+    payload = _make_scripts_file([("Vocab", 'SaveMessage = "要暂时在哪里停止回忆呢？"\nLoadMessage = "要回忆起哪个记忆呢？"')])
+    _write_data_files(tmp_path, {"Scripts.rvdata2": payload})
+    entries = extract_rpg_maker_vxace(tmp_path)
+    by_source = {e.source: e for e in entries}
+    assert by_source["要暂时在哪里停止回忆呢？"].key == "$[0].source.ruby_string[0]"
+    assert by_source["要回忆起哪个记忆呢？"].context == "rpg_maker_vxace_script_vocab_string"
+    assert by_source["要回忆起哪个记忆呢？"].context_text == "Vocab"
+
+
+def test_apply_scripts_vocabulary_string_roundtrip(tmp_path: Path):
+    payload = _make_scripts_file([("Vocab", 'SaveMessage = "要暂时在哪里停止回忆呢？"')])
+    _write_data_files(tmp_path, {"Scripts.rvdata2": payload})
+    entry = extract_rpg_maker_vxace(tmp_path)[0]
+    out = tmp_path / "out"
+    apply_rpg_maker_vxace([TranslationResult(entry.file, entry.key, entry.source, "Tạm dừng hồi ức ở đâu?")], out)
+    mc = MC.load((out / "Scripts.rvdata2").read_bytes())
+    _script_id, _name, compressed = _script_record_parts(mc.root.at().data[0])
+    assert compressed is not None
+    assert "Tạm dừng hồi ức ở đâu?" in _decode_script_source(compressed)
+
+
+def test_extract_skips_invalid_scripts_rvdata2(tmp_path: Path):
+    fake = b"\x04\x08\"\x06A"
     _write_data_files(tmp_path, {"Scripts.rvdata2": fake})
-    # Should return empty without raising — Scripts file is intentionally skipped.
     entries = extract_rpg_maker_vxace(tmp_path)
     assert entries == []

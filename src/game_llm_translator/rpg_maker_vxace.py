@@ -17,6 +17,7 @@ Example: $.events[1].pages[0].list[12].parameters[0]
 from __future__ import annotations
 
 import re
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -553,7 +554,56 @@ def _walk_database(root: ME, file: Path, fields: dict[str, str], entries: list[T
                 entries.append(TextEntry(file=file, key=f"$[{idx}].{ivar}", source=s, context=f"{context_prefix}_{kind}"))
 
 
+def _script_record_parts(script_me: ME) -> tuple[int | None, str | None, bytes | None]:
+    node = script_me.at()
+    if node.token != b"[" or len(node.data) < 3:
+        return None, None, None
+    script_id_me, name_me, source_me = node.data[:3]
+    script_id = script_id_me.at().data if script_id_me.at().token == b"i" else None
+    name = _decode_string(name_me) if _is_string(name_me) else None
+    source = source_me.at().data if source_me.at().token == b'"' else None
+    return script_id, name, source
+
+
+def _decode_script_source(compressed: bytes) -> str | None:
+    try:
+        return zlib.decompress(compressed).decode("utf-8")
+    except (zlib.error, UnicodeDecodeError):
+        return None
+
+
+def _set_script_source(script_me: ME, source: str) -> bool:
+    node = script_me.at()
+    if node.token != b"[" or len(node.data) < 3:
+        return False
+    source_me = node.data[2].at()
+    if source_me.token != b'"':
+        return False
+    source_me.data = zlib.compress(source.encode("utf-8"))
+    return True
+
+
+def _walk_scripts(root: ME, file: Path, entries: list[TextEntry]) -> None:
+    for script_idx, script_me in enumerate(_array_items(root)):
+        _script_id, name, compressed = _script_record_parts(script_me)
+        if compressed is None:
+            continue
+        source = _decode_script_source(compressed)
+        if source is None:
+            continue
+        script_name = name or f"script_{script_idx}"
+        for literal_idx, literal_text in _ruby_string_literals(source):
+            entries.append(TextEntry(
+                file=file,
+                key=f"$[{script_idx}].source.ruby_string[{literal_idx}]",
+                source=literal_text,
+                context="rpg_maker_vxace_script_vocab_string" if script_name == "Vocab" else "rpg_maker_vxace_script_string",
+                context_text=script_name,
+            ))
+
+
 # ---- public extract ----
+
 
 def _data_dir(game_dir: Path) -> Path:
     return game_dir / "Data"
@@ -587,8 +637,7 @@ def extract_rpg_maker_vxace(game_dir: Path) -> list[TextEntry]:
         elif name_lower == "troops.rvdata2":
             _walk_troops(root, path, entries)
         elif name_lower == "scripts.rvdata2":
-            # Embedded Ruby source; deferred to a future pass.
-            continue
+            _walk_scripts(root, path, entries)
         elif name_lower in _DATA_FILES_DATABASE:
             _walk_database(root, path, _DATA_FILES_DATABASE[name_lower], entries)
         elif re.fullmatch(r"map\d{3,4}\.rvdata2", name_lower):
@@ -645,6 +694,25 @@ def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) ->
         for r in items:
             ruby_match = re.fullmatch(r"(.+)\.ruby_string\[(\d+)\]", r.key)
             if ruby_match:
+                literal_idx = int(ruby_match.group(2))
+                script_match = re.fullmatch(r"\$\[(\d+)\]\.source", ruby_match.group(1))
+                if script_match:
+                    script_items = _array_items(root)
+                    script_idx = int(script_match.group(1))
+                    if script_idx >= len(script_items):
+                        skipped += 1
+                        continue
+                    _script_id, _name, compressed = _script_record_parts(script_items[script_idx])
+                    current = _decode_script_source(compressed) if compressed is not None else None
+                    if current is None:
+                        skipped += 1
+                        continue
+                    updated = _replace_ruby_string_literal(current, literal_idx, r.target)
+                    if _set_script_source(script_items[script_idx], updated):
+                        applied += 1
+                    else:
+                        skipped += 1
+                    continue
                 try:
                     steps = _parse_path(ruby_match.group(1))
                 except ValueError as exc:
@@ -659,7 +727,7 @@ def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) ->
                 if current is None:
                     skipped += 1
                     continue
-                updated = _replace_ruby_string_literal(current, int(ruby_match.group(2)), r.target)
+                updated = _replace_ruby_string_literal(current, literal_idx, r.target)
                 if _set_string_me(node, updated):
                     applied += 1
                 else:
