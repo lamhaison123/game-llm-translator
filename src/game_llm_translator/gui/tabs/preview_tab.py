@@ -317,14 +317,14 @@ class PreviewTabMixin:
                 return
         dlg = TranslationEditor(self, path)
         dlg.exec()
-        # The editor may have rewritten `path` on disk. If that's the file the
-        # preview is currently showing, reload so a later preview "Save CSV"
-        # can't silently clobber the editor's edits with stale rows.
-        if self._preview_rows and (
+        # The editor may have rewritten `path` on disk. If the preview is showing
+        # that same file and has no unsaved edits of its own, reload so a later
+        # preview "Save CSV" can't silently clobber the editor's edits.
+        if self._preview_rows and not self._preview_dirty and (
             self._same_file(path, self.preview_source_edit.text())
             or self._same_file(path, self.preview_output_edit.text())
         ):
-            self._preview_load_path(path)
+            self._preview_load(path)
         if getattr(dlg, "retry_requested", False):
             self.retry_flagged_rows()
 
@@ -365,41 +365,40 @@ class PreviewTabMixin:
     # Load existing CSV
     # ------------------------------------------------------------------
 
-    def _preview_load(self) -> None:
-        if self._preview_dirty:
-            from PySide6.QtWidgets import QMessageBox
-            reply = QMessageBox.question(
-                self, "Unsaved changes",
-                "You have unsaved edits. Load anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+    def _preview_load(self, csv_path: Path | None = None) -> None:
+        # csv_path given => reload that file directly (e.g. after the bulk editor
+        # rewrote it); skip the dirty prompt and path resolution.
+        if csv_path is None:
+            if self._preview_dirty:
+                from PySide6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self, "Unsaved changes",
+                    "You have unsaved edits. Load anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+            path = self.preview_source_edit.text().strip()
+            if not path:
+                # Try output CSV as fallback
+                path = self.preview_output_edit.text().strip()
+            if not path:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Load CSV", "No CSV path specified.")
+                return
+            csv_path = Path(path)
+            if not csv_path.exists():
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "Load CSV", f"File not found: {csv_path}")
                 return
 
-        path = self.preview_source_edit.text().strip()
-        if not path:
-            # Try output CSV as fallback
-            path = self.preview_output_edit.text().strip()
-        if not path:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Load CSV", "No CSV path specified.")
-            return
-        csv_path = Path(path)
-        if not csv_path.exists():
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Load CSV", f"File not found: {csv_path}")
-            return
-
-        self._preview_load_path(csv_path)
-
-    def _preview_load_path(self, csv_path: Path) -> bool:
-        """Load results from csv_path into the preview model. Returns False on failure."""
         try:
             results = load_results(csv_path)
         except Exception as exc:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Load CSV", f"Failed to load: {exc}")
-            return False
+            return
 
         self._preview_rows = []
         self._preview_filtered = []
@@ -417,7 +416,6 @@ class PreviewTabMixin:
         self._preview_populate_contexts()
         self._preview_apply_filter()
         self._preview_update_progress()
-        return True
 
     # ------------------------------------------------------------------
     # Start translation

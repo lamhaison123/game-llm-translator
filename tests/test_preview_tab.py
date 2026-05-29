@@ -59,6 +59,9 @@ def test_preview_apply_filter_updates_count_label():
     widget.preview_search_edit = SimpleNamespace(text=lambda: "")
     widget.preview_tree = SimpleNamespace(clear=lambda: None, addTopLevelItem=lambda _item: None, palette=lambda: None)
     widget._preview_add_tree_item = lambda _row: None
+    widget.preview_source_box = SimpleNamespace(clear=lambda: None)
+    widget.preview_target_box = SimpleNamespace(clear=lambda: None)
+    widget.preview_warning_label = SimpleNamespace(clear=lambda: None)
     widget.preview_count_label = SimpleNamespace(text="", setText=lambda value: setattr(widget.preview_count_label, "text", value))
 
     PreviewTabMixin._preview_apply_filter(widget)
@@ -98,6 +101,7 @@ def test_preview_save_preserves_sub_keys(tmp_path, monkeypatch):
     output_csv = tmp_path / "translations.csv"
     widget = SimpleNamespace()
     widget._preview_current_idx = None
+    widget.current_worker = None
     widget.preview_output_edit = SimpleNamespace(text=lambda: str(output_csv))
     widget._preview_rows = [PreviewRow(0, "Map001.json", "$.events[1]", "A\nB", "Một\nHai", "", ["$.a", "$.b"])]
     widget._preview_save_current = lambda update_tree=True: None
