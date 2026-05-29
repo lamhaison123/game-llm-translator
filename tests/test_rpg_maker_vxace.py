@@ -12,8 +12,11 @@ import pytest
 
 from game_llm_translator.models import TranslationResult
 from game_llm_translator.rpg_maker_vxace import (
+    _note_extract_mode,
     _parse_path,
+    _replace_ruby_string_literal,
     _resolve_path,
+    _ruby_string_literals,
     apply_rpg_maker_vxace,
     extract_rpg_maker_vxace,
 )
@@ -162,6 +165,38 @@ def _write_data_files(tmp: Path, files: dict[str, bytes]) -> Path:
     return tmp
 
 
+def test_note_extract_mode_skips_ascii_plugin_config():
+    assert _note_extract_mode('<play_footsound>') == 'skip'
+    assert _note_extract_mode('<ft: gold_rate 1.08>') == 'skip'
+    assert _note_extract_mode('<state overlay: 4,5,6>') == 'skip'
+    assert _note_extract_mode('"<play_footsound>"\n<战时装备变更>\n<禁止更换:8,3,2>') == 'skip'
+
+
+def test_note_extract_mode_preserves_cjk_prose_tags():
+    assert _note_extract_mode('<战斗结束时退队>') == 'whole'
+    assert _note_extract_mode('说明：这里会改变角色状态。') == 'whole'
+
+
+def test_ruby_string_literals_extracts_only_cjk_quoted_text():
+    line = 'bar_v(23,40,100,0,"精神值变化:")'
+    assert _ruby_string_literals(line) == [(0, '精神值变化:')]
+
+
+def test_ruby_string_literals_handles_single_quotes_and_escapes():
+    line = "show_text('她说\\'你好\\'')"
+    assert _ruby_string_literals(line) == [(0, "她说'你好'")]
+
+
+def test_replace_ruby_string_literal_preserves_code_shape():
+    line = 'bar_v(23,40,100,0,"精神值变化:")'
+    assert _replace_ruby_string_literal(line, 0, 'Thay đổi tinh thần:') == 'bar_v(23,40,100,0,"Thay đổi tinh thần:")'
+
+
+def test_replace_ruby_string_literal_escapes_quote():
+    line = 'msg("你好")'
+    assert _replace_ruby_string_literal(line, 0, 'Anh ấy nói "chào"') == 'msg("Anh ấy nói \\"chào\\"")'
+
+
 # ---- tests ----
 
 def test_path_parse_attrs_and_indexes():
@@ -255,9 +290,11 @@ def test_extract_map_dialogue_and_choices(tmp_path: Path):
     assert name_change.source == "新しい名前"
     assert name_change.context == "rpg_maker_map_actor_name"
 
-    # 655 script
-    script = by_key["$.events[1].pages[0].list[7].parameters[0]"]
-    assert script.context == "rpg_maker_map_script"
+    # 655 script string literal
+    script = by_key["$.events[1].pages[0].list[7].parameters[0].ruby_string[0]"]
+    assert script.source == "怪しい影"
+    assert script.context == "rpg_maker_map_script_string"
+    assert script.context_text == 'p "怪しい影"'
 
 
 def test_extract_system_terms_and_arrays(tmp_path: Path):
@@ -330,6 +367,34 @@ def test_apply_skips_unknown_paths_without_corrupting_file(tmp_path: Path):
     mc = MC.load(written)
     name = mc.root.data[1].at().data[1].data[b"@name"][1].at().data.decode("utf-8")
     assert name == "Taro"
+
+
+def test_apply_roundtrip_changes_event_script_literal_only(tmp_path: Path):
+    payload = _make_map_file([
+        (355, ['bar_v(23,40,100,0,"精神值变化:")']),
+    ])
+    src = tmp_path / "Data" / "Map001.rvdata2"
+    src.parent.mkdir()
+    src.write_bytes(payload)
+    entries = extract_rpg_maker_vxace(tmp_path)
+    script = next(e for e in entries if e.context == "rpg_maker_map_script_string")
+    assert script.key == "$.events[1].pages[0].list[0].parameters[0].ruby_string[0]"
+    out = tmp_path / "out"
+    apply_rpg_maker_vxace([
+        TranslationResult(file=script.file, key=script.key, source=script.source, target="Thay đổi tinh thần:")
+    ], out)
+    mc = MC.load((out / "Map001.rvdata2").read_bytes())
+    root = mc.root
+    node = _resolve_path(root, _parse_path("$.events[1].pages[0].list[0].parameters[0]"))
+    assert node is not None
+    assert node.at().data.decode("utf-8") == 'bar_v(23,40,100,0,"Thay đổi tinh thần:")'
+
+
+def test_apply_rpg_maker_vxace_empty_results_returns_summary(tmp_path: Path):
+    summary = apply_rpg_maker_vxace([], tmp_path / "out")
+    assert summary.applied == 0
+    assert summary.skipped == 0
+    assert summary.files_written == 0
 
 
 def test_round_trip_byte_equal_for_unchanged_string(tmp_path: Path):

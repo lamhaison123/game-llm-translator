@@ -212,29 +212,43 @@ def _detect_mv_mz(game_dir: Path) -> str | None:
     return None
 
 
-def detect_rpg_maker(game_dir: Path) -> str | None:
-    engine = _detect_mv_mz(game_dir)
-    if engine:
-        return engine
-    ini_path = game_dir / "Game.ini"
-    if ini_path.exists():
-        try:
-            ini_text = ini_path.read_text(encoding="utf-8-sig", errors="ignore")
-        except Exception:
-            ini_text = ""
-        if "RGSS3" in ini_text:
-            return "vx-ace"
-        if "RGSS2" in ini_text:
-            return "vx"
-        if "RGSS1" in ini_text:
-            return "xp"
-    if any((game_dir / "Data").glob("*.rvdata2")):
+def _rgss_data_dir(game_dir: Path) -> Path:
+    for name in ("Data", "data", "DATA"):
+        path = game_dir / name
+        if path.is_dir():
+            return path
+    return game_dir / "Data"
+
+
+def _detect_vxace_rgss(game_dir: Path) -> str | None:
+    data_dir = _rgss_data_dir(game_dir)
+    if any(data_dir.glob("*.rvdata2")):
         return "vx-ace"
-    if any((game_dir / "Data").glob("*.rvdata")):
+    if any(data_dir.glob("*.rvdata")):
         return "vx"
-    if any((game_dir / "Data").glob("*.rxdata")):
+    if any(data_dir.glob("*.rxdata")):
+        return "xp"
+    ini_path = game_dir / "Game.ini"
+    if not ini_path.exists():
+        return None
+    try:
+        ini_text = ini_path.read_text(encoding="utf-8-sig", errors="ignore")
+    except Exception:
+        ini_text = ""
+    if "RGSS3" in ini_text or "Scripts=Data\\Scripts.rvdata2" in ini_text:
+        return "vx-ace"
+    if "RGSS2" in ini_text or "Scripts=Data\\Scripts.rvdata" in ini_text:
+        return "vx"
+    if "RGSS1" in ini_text or "Scripts=Data\\Scripts.rxdata" in ini_text:
         return "xp"
     return None
+
+
+def detect_rpg_maker(game_dir: Path) -> str | None:
+    rgss_engine = _detect_vxace_rgss(game_dir)
+    if rgss_engine:
+        return rgss_engine
+    return _detect_mv_mz(game_dir)
 
 
 def _event_context_text(value: dict[str, Any], surrounding_commands: list[dict[str, Any]] | None = None) -> str:

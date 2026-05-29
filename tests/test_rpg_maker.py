@@ -107,6 +107,35 @@ def test_detect_rpg_maker_vx_ace(tmp_path):
     assert detect_rpg_maker(tmp_path) == "vx-ace"
 
 
+def test_detect_rpg_maker_vx_ace_rgss300_library(tmp_path):
+    data_dir = tmp_path / "Data"
+    data_dir.mkdir()
+    (data_dir / "Actors.rvdata2").write_bytes(b"\x04\x08[]")
+    ini = tmp_path / "Game.ini"
+    ini.write_text("[Game]\nLibrary=System\\RGSS300.dll\nScripts=Data\\Scripts.rvdata2\n", encoding="utf-8")
+    assert detect_rpg_maker(tmp_path) == "vx-ace"
+
+
+def test_detect_rpg_maker_vx_ace_rgss300_ini_marker_without_data(tmp_path):
+    ini = tmp_path / "Game.ini"
+    ini.write_text("[Game]\nLibrary=System\\RGSS300.dll\nScripts=Data\\Scripts.rvdata2\n", encoding="utf-8")
+    assert detect_rpg_maker(tmp_path) == "vx-ace"
+
+
+def test_detect_rpg_maker_vx_ace_lowercase_data_rvdata2(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "Actors.rvdata2").write_bytes(b"\x04\x08[]")
+    assert detect_rpg_maker(tmp_path) == "vx-ace"
+
+
+def test_detect_rpg_maker_vx_ace_rvdata2_preferred_over_data_folder(tmp_path):
+    data_dir = tmp_path / "Data"
+    data_dir.mkdir()
+    (data_dir / "Actors.rvdata2").write_bytes(b"\x04\x08[]")
+    assert detect_rpg_maker(tmp_path) == "vx-ace"
+
+
 def test_detect_rpg_maker_unknown(tmp_path):
     assert detect_rpg_maker(tmp_path) is None
 

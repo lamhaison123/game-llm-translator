@@ -8,6 +8,8 @@ from .models import TranslationResult
 _PLACEHOLDER_RE = re.compile(
     _INNER_CTRL_RE.pattern + "|(?:<[^<>]{1,120}>)"
 )
+_CONTROL_CODE_RE = re.compile(r"\\[A-Za-z]+\[[^\]]+\]|\\[{}.$!><^_]|\|\*")
+_ANGLE_TAG_RE = re.compile(r"<[^<>]+>")
 
 _NAME_CONTEXTS = frozenset({
     "rpg_maker_actors_name",
@@ -103,6 +105,14 @@ def needs_retry(source: str, target: str) -> bool:
     return is_cjk_leak(target)
 
 
+def _missing_tokens(source: str, target: str, pattern: re.Pattern[str], label: str) -> list[str]:
+    warnings: list[str] = []
+    for token in sorted(set(pattern.findall(source))):
+        if token not in target:
+            warnings.append(f"missing {label} {token!r}")
+    return warnings
+
+
 def translation_warnings(source: str, target: str, context: str = "") -> list[str]:
     """Return non-fatal quality warnings for a source/target pair."""
     if not target.strip() or target == source:
@@ -122,6 +132,11 @@ def translation_warnings(source: str, target: str, context: str = "") -> list[st
             warnings.append(f"missing placeholder {token!r}")
     if _NAMEBOX_PREFIX_RE.match(source) and not _NAMEBOX_PREFIX_RE.match(target):
         warnings.append("missing YEP_MessageCore namebox prefix")
+    warnings.extend(_missing_tokens(source, target, _CONTROL_CODE_RE, "control code"))
+    if context == "rpg_maker_vxace_note":
+        warnings.extend(_missing_tokens(source, target, _ANGLE_TAG_RE, "tag"))
+    if context.endswith("_script_string") and "\n" in target:
+        warnings.append("script string contains newline")
     source_name = _namebox_visible_name(source)
     target_name = _namebox_visible_name(target)
     if source_name and source_name == target_name and _CJK_RE.search(source_name):

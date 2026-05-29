@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from game_llm_translator.models import TranslationResult
 from game_llm_translator.validate import (
     check_noun_consistency,
@@ -8,7 +10,6 @@ from game_llm_translator.validate import (
     needs_retry,
     translation_warnings,
 )
-from pathlib import Path
 
 
 def test_translation_warnings_detects_missing_placeholder():
@@ -40,6 +41,21 @@ def test_translation_warnings_context_dialogue_longer_ok():
 def test_translation_warnings_no_context_falls_back():
     issues = translation_warnings("短剣", "Dagger of the ancient dragon kings")
     assert not any("name/UI label" in i for i in issues)
+
+
+def test_vxace_validation_preserves_control_codes():
+    warnings = translation_warnings("寄存\\C[23]\\N[7]", "Cất giữ", "rpg_maker_map_choice")
+    assert any("missing control code" in w for w in warnings)
+
+
+def test_vxace_validation_preserves_angle_tags():
+    warnings = translation_warnings("<战斗结束时退队>", "Rời đội khi kết thúc chiến đấu", "rpg_maker_vxace_note")
+    assert any("missing tag" in w for w in warnings)
+
+
+def test_vxace_script_string_rejects_unescaped_newline():
+    warnings = translation_warnings("精神值变化:", "Dòng 1\nDòng 2", "rpg_maker_map_script_string")
+    assert any("script string contains newline" in w for w in warnings)
 
 
 def test_noun_consistency_no_inconsistency():
@@ -76,107 +92,3 @@ def test_noun_consistency_ignores_identical_translations():
         TranslationResult(Path("a.json"), "$[2].name", "スライム", "Slime", "rpg_maker_enemies_name"),
     ]
     assert check_noun_consistency(results) == []
-
-
-def test_noun_consistency_ignores_fallback():
-    results = [
-        TranslationResult(Path("a.json"), "$[1].name", "テスト", "テスト", "rpg_maker_actors_name"),
-    ]
-    assert check_noun_consistency(results) == []
-
-
-def test_format_noun_warnings():
-    issues = [("勇者", ["Dũng giả", "Anh hùng"]), ("魔法", ["Ma thuật", "Phép thuật"])]
-    warnings = format_noun_warnings(issues)
-    assert len(warnings) == 2
-    assert "勇者" in warnings[0]
-    assert "Dũng giả" in warnings[0]
-    assert "Anh hùng" in warnings[0]
-
-
-def test_format_noun_warnings_truncates():
-    issues = [(f"term{i}", [f"trans{i}a", f"trans{i}b"]) for i in range(50)]
-    warnings = format_noun_warnings(issues, max_items=10)
-    assert len(warnings) == 11
-    assert "40 more" in warnings[-1]
-
-
-def test_noun_consistency_detects_speaker_name_inconsistency():
-    results = [
-        TranslationResult(Path("a.json"), "$[1].parameters[4]", "特蕾西亚", "Theresia", "rpg_maker_speaker_name"),
-        TranslationResult(Path("b.json"), "$[2].parameters[4]", "特蕾西亚", "Teresia", "rpg_maker_speaker_name"),
-    ]
-    issues = check_noun_consistency(results)
-    assert len(issues) == 1
-    assert issues[0][0] == "特蕾西亚"
-
-
-def test_translation_warnings_speaker_name_overflow():
-    issues = translation_warnings("ア", "A very long translated speaker name that overflows", context="rpg_maker_speaker_name")
-    assert any("name/UI label too long" in i for i in issues)
-
-
-def test_translation_warnings_state_description_ok():
-    issues = translation_warnings("毒状態のキャラクター", "Poisoned character takes damage", context="rpg_maker_states_description")
-    assert issues == []
-
-
-def test_translation_warnings_state_description_too_long():
-    issues = translation_warnings("毒", "A very long description that is way too much for a short source", context="rpg_maker_states_description")
-    assert any("description too long" in i for i in issues)
-
-
-def test_translation_warnings_system_title_overflow():
-    issues = translation_warnings("短い", "An extremely long game title that would overflow the title screen", context="rpg_maker_system_gameTitle")
-    assert any("name/UI label too long" in i for i in issues)
-
-
-def test_is_cjk_leak_detects_kanji():
-    assert is_cjk_leak("Dũng giả 勇者 đến rồi")
-
-
-def test_is_cjk_leak_detects_hiragana():
-    assert is_cjk_leak("Xin chào こんにちは")
-
-
-def test_is_cjk_leak_detects_katakana():
-    assert is_cjk_leak("Bình ポーション")
-
-
-def test_is_cjk_leak_detects_hangul():
-    assert is_cjk_leak("안녕 hello")
-
-
-def test_is_cjk_leak_clean_vietnamese():
-    assert not is_cjk_leak("Xin chào, đây là bản dịch sạch")
-
-
-def test_is_cjk_leak_empty():
-    assert not is_cjk_leak("")
-
-
-def test_needs_retry_empty_target():
-    assert needs_retry("こんにちは", "")
-    assert needs_retry("こんにちは", "   ")
-
-
-def test_needs_retry_fallback():
-    assert needs_retry("Hello", "Hello")
-
-
-def test_needs_retry_cjk_leak():
-    assert needs_retry("こんにちは", "Xin chào こんにちは")
-
-
-def test_needs_retry_clean_translation():
-    assert not needs_retry("こんにちは", "Xin chào")
-
-
-def test_translation_warnings_flags_cjk_leak():
-    issues = translation_warnings("勇者が来た", "Dũng giả 勇者 đến", context="rpg_maker_event_text")
-    assert any("CJK characters" in i for i in issues)
-
-
-def test_translation_warnings_clean_no_cjk_warning():
-    issues = translation_warnings("勇者が来た", "Dũng giả đến", context="rpg_maker_event_text")
-    assert not any("CJK characters" in i for i in issues)

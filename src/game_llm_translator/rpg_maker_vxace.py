@@ -17,12 +17,20 @@ Example: $.events[1].pages[0].list[12].parameters[0]
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from .app_logging import log_event
 from .models import TextEntry, TranslationResult
 from .vendor.rm_marshal_core import MC, ME
+
+
+@dataclass(slots=True)
+class VxAceApplySummary:
+    applied: int = 0
+    skipped: int = 0
+    files_written: int = 0
 
 
 # ---- file inventory ----
@@ -142,12 +150,89 @@ def _is_translatable(value: str) -> bool:
     return bool(_HAS_TRANSLATABLE_RE.search(value))
 
 
+def _note_extract_mode(value: str) -> str:
+    text = value.strip()
+    if not text or not _HAS_TRANSLATABLE_RE.search(text):
+        return "skip"
+    tag_bodies = re.findall(r"<([^<>]*)>", text)
+    without_tags = re.sub(r"<[^<>]*>", "", text).strip()
+    if tag_bodies:
+        for body in tag_bodies:
+            body = body.strip()
+            if _HAS_TRANSLATABLE_RE.search(body) and (re.search(r"[:=,]", body) or re.search(r"\d", body)):
+                return "skip"
+        if not without_tags:
+            return "whole"
+    return "whole"
+
+
 def _note_is_translatable(value: str) -> bool:
-    """`@note` is usually script tags like `<custom regen: 5>`. Only extract if it
-    contains real CJK prose."""
-    if not value:
-        return False
-    return bool(_HAS_TRANSLATABLE_RE.search(value))
+    return _note_extract_mode(value) == "whole"
+
+
+def _ruby_string_literals(line: str) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    i = 0
+    literal_index = 0
+    while i < len(line):
+        quote = line[i]
+        if quote not in {'"', "'"}:
+            i += 1
+            continue
+        i += 1
+        chars: list[str] = []
+        while i < len(line):
+            ch = line[i]
+            if ch == "\\" and i + 1 < len(line):
+                chars.append(line[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                break
+            chars.append(ch)
+            i += 1
+        text = "".join(chars)
+        if _is_translatable(text):
+            out.append((literal_index, text))
+        literal_index += 1
+        i += 1
+    return out
+
+
+def _replace_ruby_string_literal(line: str, target_index: int, replacement: str) -> str:
+    result: list[str] = []
+    i = 0
+    literal_index = 0
+    while i < len(line):
+        quote = line[i]
+        if quote not in {'"', "'"}:
+            result.append(line[i])
+            i += 1
+            continue
+        result.append(quote)
+        i += 1
+        original: list[str] = []
+        while i < len(line):
+            ch = line[i]
+            if ch == "\\" and i + 1 < len(line):
+                original.append(line[i])
+                original.append(line[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                break
+            original.append(ch)
+            i += 1
+        if literal_index == target_index:
+            escaped = replacement.replace("\\", "\\\\").replace(quote, "\\" + quote)
+            result.append(escaped)
+        else:
+            result.extend(original)
+        if i < len(line) and line[i] == quote:
+            result.append(quote)
+            i += 1
+        literal_index += 1
+    return "".join(result)
 
 
 # ---- key path ----
@@ -274,10 +359,12 @@ def _walk_event_list(list_me: ME, file: Path, prefix: str, context_prefix: str, 
                 ))
         elif code in (355, 655) and params and _is_string(params[0]):
             s = _decode_string(params[0])
-            if s and _is_translatable(s):
+            if not s:
+                continue
+            for literal_idx, literal_text in _ruby_string_literals(s):
                 entries.append(TextEntry(
-                    file=file, key=f"{cmd_prefix}[0]", source=s,
-                    context=f"{context_prefix}_script", context_text=context_text,
+                    file=file, key=f"{cmd_prefix}[0].ruby_string[{literal_idx}]", source=literal_text,
+                    context=f"{context_prefix}_script_string", context_text=s,
                 ))
 
 
@@ -525,17 +612,20 @@ def _set_string_me(node: ME, new_value: str) -> bool:
     return True
 
 
-def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) -> None:
+def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) -> VxAceApplySummary:
     """Apply translated entries by rewriting .rvdata2 files into `output_dir/`.
 
     Files are written flat (e.g. `output_dir/Map001.rvdata2`) to match the
     convention used by `apply_rpg_maker` for MV/MZ.
     """
+    summary = VxAceApplySummary()
     grouped: dict[Path, list[TranslationResult]] = {}
     for r in results:
         if r.target is None or r.target == r.source:
             continue
         grouped.setdefault(r.file, []).append(r)
+    if not grouped:
+        return summary
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -544,13 +634,37 @@ def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) ->
             mc = MC.load(src_path.read_bytes())
         except Exception as exc:
             log_event(f"apply: failed to load {src_path.name}: {exc}", level="WARN")
+            summary.skipped += len(items)
             continue
         root = mc.root
         if root is None:
+            summary.skipped += len(items)
             continue
         applied = 0
         skipped = 0
         for r in items:
+            ruby_match = re.fullmatch(r"(.+)\.ruby_string\[(\d+)\]", r.key)
+            if ruby_match:
+                try:
+                    steps = _parse_path(ruby_match.group(1))
+                except ValueError as exc:
+                    log_event(f"apply: bad path {r.key} in {src_path.name}: {exc}", level="WARN")
+                    skipped += 1
+                    continue
+                node = _resolve_path(root, steps)
+                if node is None or not _is_string(node):
+                    skipped += 1
+                    continue
+                current = _decode_string(node)
+                if current is None:
+                    skipped += 1
+                    continue
+                updated = _replace_ruby_string_literal(current, int(ruby_match.group(2)), r.target)
+                if _set_string_me(node, updated):
+                    applied += 1
+                else:
+                    skipped += 1
+                continue
             try:
                 steps = _parse_path(r.key)
             except ValueError as exc:
@@ -570,6 +684,11 @@ def apply_rpg_maker_vxace(results: list[TranslationResult], output_dir: Path) ->
             out_path.write_bytes(mc.dump())
         except Exception as exc:
             log_event(f"apply: failed to write {out_path}: {exc}", level="ERROR")
+            summary.skipped += skipped + applied
             continue
+        summary.files_written += 1
+        summary.applied += applied
+        summary.skipped += skipped
         if skipped:
             log_event(f"apply: {src_path.name}: applied={applied} skipped={skipped}", level="INFO")
+    return summary

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Literal, cast
 
 import typer
@@ -19,7 +20,12 @@ from .models import TranslationResult, TextEntry, text_identity
 from .translate_pipeline import TranslateOptions, run_translate
 
 app = typer.Typer(help="Translate RPG Maker and Unity game text via LLM API.")
-console = Console()
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+console = Console(force_terminal=False, legacy_windows=False)
 
 GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "rpg-maker-vxace", "unity", "unity-xunity"]
 
@@ -406,9 +412,15 @@ def apply(
 ):
     """Apply translations. RPG Maker JSON and Unity XUnity TXT supported; legacy unity exports CSV."""
     results = load_results(translations_csv)
+    if not results:
+        console.print("No translations to apply.")
+        return
     if _is_rpg_maker_type(game_type):
         apply_rpg_maker(results, out_dir)
-        console.print(f"Wrote RPG Maker translated JSON -> {out_dir}")
+        if game_type == "rpg-maker-vxace":
+            console.print(f"Wrote RPG Maker VX Ace .rvdata2 -> {out_dir}")
+        else:
+            console.print(f"Wrote RPG Maker translated JSON -> {out_dir}")
     elif _is_xunity_type(game_type):
         apply_xunity(results, out_dir)
         console.print(f"Wrote XUnity translated TXT -> {out_dir}")
