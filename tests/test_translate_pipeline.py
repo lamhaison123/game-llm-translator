@@ -254,11 +254,18 @@ def test_fanout_expands_unique_result_to_all_siblings():
     assert all(r.target == "Xin chào" for r in expanded)
 
 
-def test_fanout_respects_different_context_text():
-    e1 = TextEntry(Path("a.json"), "$.k", "Wait", context_text="ui")
-    e2 = TextEntry(Path("b.json"), "$.k", "Wait", context_text="dialogue")
+def test_fanout_respects_different_context_category():
+    e1 = TextEntry(Path("a.json"), "$.k", "Wait", context="rpg_maker_system_elements")
+    e2 = TextEntry(Path("b.json"), "$.k", "Wait", context="rpg_maker_event_text")
     groups = build_source_groups([e1, e2])
-    assert len(groups) == 2
+    assert len(groups) == 2  # "ui" vs "dialogue" → different categories
+
+
+def test_fanout_dedupes_same_source_same_category():
+    e1 = TextEntry(Path("a.json"), "$.k", "はい", context="rpg_maker_event_text")
+    e2 = TextEntry(Path("b.json"), "$.k", "はい", context="rpg_maker_map_dialogue")
+    groups = build_source_groups([e1, e2])
+    assert len(groups) == 1  # both "dialogue" category → deduped
 
 
 def test_run_translate_with_mock_provider(tmp_path):

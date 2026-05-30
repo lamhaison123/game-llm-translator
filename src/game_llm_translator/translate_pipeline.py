@@ -147,8 +147,48 @@ def build_char_batches(
     return batches
 
 
+_DEDUP_CATEGORIES: dict[str, str] = {
+    "rpg_maker_actors_name": "name", "rpg_maker_actors_nickname": "name",
+    "rpg_maker_enemies_name": "name", "rpg_maker_skills_name": "name",
+    "rpg_maker_items_name": "name", "rpg_maker_weapons_name": "name",
+    "rpg_maker_armors_name": "name", "rpg_maker_states_name": "name",
+    "rpg_maker_classes_name": "name", "rpg_maker_map_display_name": "name",
+    "rpg_maker_system_gameTitle": "name", "rpg_maker_system_currencyUnit": "name",
+    "rpg_maker_speaker_name": "name", "rpg_maker_troops_name": "name",
+    "rpg_maker_map_event_name": "name", "rpg_maker_map_info_name": "name",
+    "rpg_maker_common_event_name": "name", "rpg_maker_troop_name": "name",
+    "rpg_maker_event_text": "dialogue", "rpg_maker_map_dialogue": "dialogue",
+    "rpg_maker_map_comment": "dialogue",
+    "rpg_maker_choice": "choice", "rpg_maker_map_choice": "choice",
+    "rpg_maker_map_choice_label": "choice",
+    "rpg_maker_vxace_note": "note",
+    "rpg_maker_map_script_string": "script",
+    "rpg_maker_vxace_script_string": "script",
+    "rpg_maker_vxace_script_vocab_string": "script",
+    "rpg_maker_map_actor_name": "script",
+    "rpg_maker_skills_description": "description",
+    "rpg_maker_items_description": "description",
+    "rpg_maker_weapons_description": "description",
+    "rpg_maker_armors_description": "description",
+    "rpg_maker_states_description": "description",
+    "rpg_maker_actors_profile": "description",
+    "rpg_maker_terms_basic": "ui", "rpg_maker_terms_commands": "ui",
+    "rpg_maker_terms_params": "ui", "rpg_maker_terms_messages": "ui",
+    "rpg_maker_system_elements": "ui", "rpg_maker_system_weaponTypes": "ui",
+    "rpg_maker_system_armorTypes": "ui", "rpg_maker_system_equipTypes": "ui",
+    "rpg_maker_system_skillTypes": "ui",
+    "rpg_maker_skills_message1": "ui", "rpg_maker_skills_message2": "ui",
+    "rpg_maker_states_message1": "ui", "rpg_maker_states_message2": "ui",
+    "rpg_maker_states_message3": "ui", "rpg_maker_states_message4": "ui",
+}
+
+
+def _dedup_category(context: str) -> str:
+    return _DEDUP_CATEGORIES.get(context, "other")
+
+
 def dedupe_group_key(entry: TextEntry) -> tuple[str, str]:
-    return (entry.source, entry.context_text)
+    return (entry.source, _dedup_category(entry.context))
 
 
 def build_source_groups(entries: list[TextEntry]) -> dict[tuple[str, str], list[TextEntry]]:
