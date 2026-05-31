@@ -21,12 +21,8 @@ def _data_dir(game_dir: Path) -> Path:
     return game_dir / "www" / "data" if (game_dir / "www" / "data").exists() else game_dir / "data"
 
 
-def _vxace_data_dir(game_dir: Path) -> Path:
-    return game_dir / "Data"
-
-
 def _is_supported_engine(engine: str | None) -> bool:
-    return is_supported_json_engine(engine) or engine == "vx-ace"
+    return is_supported_json_engine(engine)
 
 
 def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "Vietnamese") -> dict[str, object]:
@@ -36,12 +32,8 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
         engine = "unity-xunity"
     elif engine is None and detect_unity_bare(game_dir):
         engine = "unity-bare"
-    if engine == "vx-ace":
-        data_dir = _vxace_data_dir(game_dir)
-        json_files: list[Path] = []
-    else:
-        data_dir = _data_dir(game_dir)
-        json_files = sorted(data_dir.glob("*.json")) if data_dir.exists() else []
+    data_dir = _data_dir(game_dir)
+    json_files = sorted(data_dir.glob("*.json")) if data_dir.exists() else []
     extract_warnings: list[str] = []
     if engine == "unity-xunity":
         entries = extract_xunity(game_dir)
@@ -51,7 +43,7 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
         entries = []
     contexts = Counter(entry.context for entry in entries)
     files = Counter(entry.file.name for entry in entries)
-    supported = (_is_supported_engine(engine) or engine == "unity-xunity") and engine not in {"xp", "vx"}
+    supported = (_is_supported_engine(engine) or engine == "unity-xunity") and engine not in {"xp", "vx", "vx-ace"}
     return {
         "game_dir": str(game_dir),
         "engine": engine or "unknown",
@@ -62,8 +54,8 @@ def analyze_game(game_dir: Path, provider: str = "google", target_lang: str = "V
         "top_files": dict(files.most_common(10)),
         "supported_auto_apply": supported,
         "unsupported_reason": (
-            f"RPG Maker {engine.upper()} (RGSS) is not supported; use MV/MZ or VX Ace games."
-            if engine in {"xp", "vx"}
+            f"RPG Maker {engine.upper()} is not supported; only MV/MZ games are supported."
+            if engine in {"xp", "vx", "vx-ace"}
             else (
                 "Unity game detected but XUnity.AutoTranslator is not installed. "
                 "Use 'Install BepInEx + XUnity' in the Apply tab, run the game once, then scan again."
@@ -116,12 +108,12 @@ def auto_translate_game(
     is_xunity = engine is None and xunity_dir is not None
     if engine is None:
         engine = "unity-xunity"
-    if engine in {"xp", "vx"}:
+    if engine in {"xp", "vx", "vx-ace"}:
         raise ValueError(
-            f"Detected RPG Maker {engine.upper()}; only MV/MZ and VX Ace are supported for auto-translate."
+            f"Detected RPG Maker {engine.upper()}; only MV/MZ are supported for auto-translate."
         )
     if not is_xunity and not _is_supported_engine(engine):
-        raise ValueError(f"Detected {engine}, but automatic apply currently supports RPG Maker MV/MZ/VX Ace or Unity XUnity AutoTranslator games only")
+        raise ValueError(f"Detected {engine}, but automatic apply currently supports RPG Maker MV/MZ or Unity XUnity AutoTranslator games only")
 
     work_dir = work_dir or (game_dir / "translator_work")
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -186,7 +178,7 @@ def auto_translate_game(
         translated_glob = "*.txt"
     else:
         apply_rpg_maker(results, out_dir)
-        translated_glob = "*.rvdata2" if engine == "vx-ace" else "*.json"
+        translated_glob = "*.json"
     manifest = {
         "game_dir": str(game_dir),
         "engine": engine,
@@ -228,26 +220,23 @@ def auto_translate_game(
                 progress(f"Applied translated files -> {target_subdir}")
             write_analysis_report(manifest, work_dir / "manifest.json")
             return target_subdir
-        data_dir = _vxace_data_dir(game_dir) if engine == "vx-ace" else _data_dir(game_dir)
+        data_dir = _data_dir(game_dir)
         if backup:
             backup_dir = timestamped_unique_path(game_dir, "data_backup_")
             shutil.copytree(data_dir, backup_dir)
             manifest["backup_dir"] = str(backup_dir)
             if progress:
                 progress(f"Backup created -> {backup_dir}")
-        copy_glob = "*.rvdata2" if engine == "vx-ace" else "*.json"
-        for file in out_dir.rglob(copy_glob):
+        for file in out_dir.rglob("*.json"):
             destination = data_dir / file.relative_to(out_dir)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(file, destination)
-        # Auto-replace font for Vietnamese (MV/MZ only — VX Ace fonts handled at game level)
-        if engine != "vx-ace":
-            font_result = ensure_game_fonts_support(game_dir, target_lang)
-            if font_result["replaced"]:
-                log_event(f"Font replaced: {font_result.get('details', '')}", level="INFO")
-                if progress:
-                    progress(f"Font replaced: {font_result.get('details', '')}")
-            manifest["font_replacement"] = font_result
+        font_result = ensure_game_fonts_support(game_dir, target_lang)
+        if font_result["replaced"]:
+            log_event(f"Font replaced: {font_result.get('details', '')}", level="INFO")
+            if progress:
+                progress(f"Font replaced: {font_result.get('details', '')}")
+        manifest["font_replacement"] = font_result
         manifest["applied_dir"] = str(data_dir)
         if progress:
             progress(f"Applied translated files -> {data_dir}")

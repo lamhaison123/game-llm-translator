@@ -157,15 +157,15 @@ _DEDUP_CATEGORIES: dict[str, str] = {
     "rpg_maker_speaker_name": "name", "rpg_maker_troops_name": "name",
     "rpg_maker_map_event_name": "name", "rpg_maker_map_info_name": "name",
     "rpg_maker_common_event_name": "name", "rpg_maker_troop_name": "name",
+    "rpg_maker_map_actor_name": "name",
     "rpg_maker_event_text": "dialogue", "rpg_maker_map_dialogue": "dialogue",
-    "rpg_maker_map_comment": "dialogue",
+    "rpg_maker_map_comment": "dialogue", "rpg_maker_comment": "dialogue",
+    "rpg_maker_skills_message1": "dialogue", "rpg_maker_skills_message2": "dialogue",
+    "rpg_maker_states_message1": "dialogue", "rpg_maker_states_message2": "dialogue",
+    "rpg_maker_states_message3": "dialogue", "rpg_maker_states_message4": "dialogue",
     "rpg_maker_choice": "choice", "rpg_maker_map_choice": "choice",
     "rpg_maker_map_choice_label": "choice",
-    "rpg_maker_vxace_note": "note",
-    "rpg_maker_map_script_string": "script",
-    "rpg_maker_vxace_script_string": "script",
-    "rpg_maker_vxace_script_vocab_string": "script",
-    "rpg_maker_map_actor_name": "script",
+    "rpg_maker_map_script_string": "script", "rpg_maker_script": "script",
     "rpg_maker_skills_description": "description",
     "rpg_maker_items_description": "description",
     "rpg_maker_weapons_description": "description",
@@ -177,14 +177,11 @@ _DEDUP_CATEGORIES: dict[str, str] = {
     "rpg_maker_system_elements": "ui", "rpg_maker_system_weaponTypes": "ui",
     "rpg_maker_system_armorTypes": "ui", "rpg_maker_system_equipTypes": "ui",
     "rpg_maker_system_skillTypes": "ui",
-    "rpg_maker_skills_message1": "ui", "rpg_maker_skills_message2": "ui",
-    "rpg_maker_states_message1": "ui", "rpg_maker_states_message2": "ui",
-    "rpg_maker_states_message3": "ui", "rpg_maker_states_message4": "ui",
 }
 
 
 def _dedup_category(context: str) -> str:
-    return _DEDUP_CATEGORIES.get(context, "other")
+    return _DEDUP_CATEGORIES.get(context, context)
 
 
 def dedupe_group_key(entry: TextEntry) -> tuple[str, str]:

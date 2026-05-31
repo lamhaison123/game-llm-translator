@@ -10,7 +10,7 @@ Tool dịch text game RPG Maker MV/MZ và Unity (XUnity AutoTranslator) bằng L
 - **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` (format `original=translation`); preserve regex rules/scoping directives trong file xử lý, skip resizer files
 - **Pipeline dịch chung** (`translate_pipeline.py`): GUI, CLI và `auto` dùng chung retry, memory, dedup, checkpoint
 - **Parallel translate**: 1-8 workers trên GUI, `translate`, `pipeline`, `auto` (`--workers`)
-- **Pre-dedup**: gom theo `(source, context_text)`, gọi LLM 1 lần rồi fan-out (giảm API calls)
+- **Pre-dedup**: gom theo `(source, context_category)`, gọi LLM 1 lần rồi fan-out (giảm API calls)
 - **Retry thông minh**: đọc `retry_after` từ Cloudflare 524, defer batch, retry backoff, fallback source nếu vẫn fail
 - **Kiểm tra placeholder**: cảnh báo khi thiếu mã RPG (`\\V[1]`, `%1`, …) trong bản dịch
 - **Translation memory**: per-game + global, file-locked để tránh corrupt khi parallel write
@@ -338,7 +338,7 @@ Output: `dist/game-translator-gui.app`.
 | RPG Maker MV | ✅ | ✅ | ✅ | đầy đủ |
 | RPG Maker MZ | ✅ | ✅ | ✅ | đầy đủ + plugin command 357 |
 | Unity (XUnity AutoTranslator) | ✅ | ✅ | ✅ | qua `Translation/{lang}/Text/*.txt` |
-| RPG Maker VX Ace | ✅ | ❌ | ❌ | detect only (cần parse `.rvdata2`) |
+| RPG Maker VX Ace / VX / XP | ✅ | ❌ | ❌ | detect only (không hỗ trợ) |
 | RPG Maker VX / XP | ✅ | ❌ | ❌ | detect only |
 
 ## License

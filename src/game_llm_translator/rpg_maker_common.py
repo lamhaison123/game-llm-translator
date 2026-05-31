@@ -144,8 +144,6 @@ def normalize_gui_game_type(value: str | None) -> str:
         return "unity-xunity"
     if value in {"rpg-maker-mz", "mz"}:
         return "rpg-maker-mz"
-    if value in {"rpg-maker-vxace", "vx-ace", "vxace"}:
-        return "rpg-maker-vxace"
     return "rpg-maker-mv"
 
 
@@ -154,8 +152,6 @@ def engine_to_gui_game_type(engine: str | None) -> str:
         return "unity-xunity"
     if engine in {"mz", "mv-mz"}:
         return "rpg-maker-mz"
-    if engine == "vx-ace":
-        return "rpg-maker-vxace"
     return "rpg-maker-mv"
 
 
@@ -165,8 +161,6 @@ def gui_game_type_to_engine(value: str | None) -> str:
         return "unity-xunity"
     if normalized == "rpg-maker-mz":
         return "mz"
-    if normalized == "rpg-maker-vxace":
-        return "vx-ace"
     if normalized == "rpg-maker-mv":
         return "mv"
     # fallback
@@ -416,7 +410,7 @@ def _walk_system_json(value: Any, file: Path, prefix: str = "$") -> list[TextEnt
             _append_text_entry(entries, file, child_key, child, f"rpg_maker_system_{key}")
         elif key in RPG_MAKER_SYSTEM_ARRAY_KEYS and isinstance(child, list):
             for index, item in enumerate(child):
-                _append_text_entry(entries, file, f"{child_key}[{index}]", item, f"rpg_maker_{key}")
+                _append_text_entry(entries, file, f"{child_key}[{index}]", item, f"rpg_maker_system_{key}")
         elif key == "terms" and isinstance(child, dict):
             for term_key in RPG_MAKER_SYSTEM_TERM_KEYS:
                 if term_key in child:

@@ -10,7 +10,7 @@ Translate RPG Maker MV/MZ and Unity (XUnity AutoTranslator) game text with LLMs 
 - **Unity XUnity AutoTranslator**: extract/apply `Translation/{Lang}/Text/*.txt` files (`original=translation` format); preserve regex rules/scoping directives in processed files, skip resizer files
 - **Shared translate pipeline** (`translate_pipeline.py`): GUI, CLI, and `auto` use the same retry, memory, dedup, and checkpoint logic
 - **Parallel translation**: 1-8 workers on GUI, `translate`, `pipeline`, and `auto` (`--workers`)
-- **Source pre-deduplication**: groups by `(source, context_text)`, calls the LLM once, fans out to siblings (reduces API calls)
+- **Source pre-deduplication**: groups by `(source, context_category)`, calls the LLM once, fans out to siblings (reduces API calls)
 - **Smart retry**: reads `retry_after` from Cloudflare 524, defers failed batches, retries with backoff, falls back to source if still failing
 - **Placeholder checks**: warns when RPG control codes (`\\V[1]`, `%1`, etc.) are missing from translations
 - **Translation memory**: per-game and global memory, file-locked to avoid corruption during parallel writes

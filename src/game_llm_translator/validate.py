@@ -127,15 +127,6 @@ def repair_translation_syntax(source: str, target: str, context: str = "") -> st
     for token in re.findall(r"%[sdfox]", source):
         if token not in repaired:
             repaired += token
-    if context == "rpg_maker_vxace_note":
-        for token in _ANGLE_TAG_RE.findall(source):
-            if token not in repaired:
-                if repaired.startswith("<") and repaired.endswith(">"):
-                    inner = repaired[1:-1]
-                    src_inner = token[1:-1]
-                    if _CJK_RE.search(src_inner) and not _CJK_RE.search(inner):
-                        continue
-                repaired += token
     return repaired
 
 
@@ -159,11 +150,6 @@ def translation_warnings(source: str, target: str, context: str = "") -> list[st
     if _NAMEBOX_PREFIX_RE.match(source) and not _NAMEBOX_PREFIX_RE.match(target):
         warnings.append("missing YEP_MessageCore namebox prefix")
     warnings.extend(_missing_tokens(source, target, _CONTROL_CODE_RE, "control code"))
-    if context == "rpg_maker_vxace_note":
-        source_tags = _ANGLE_TAG_RE.findall(source)
-        target_tags = _ANGLE_TAG_RE.findall(target)
-        if len(target_tags) < len(source_tags):
-            warnings.extend(_missing_tokens(source, target, _ANGLE_TAG_RE, "tag"))
     if context.endswith("_script_string") and "\n" in target:
         warnings.append("script string contains newline")
     source_name = _namebox_visible_name(source)

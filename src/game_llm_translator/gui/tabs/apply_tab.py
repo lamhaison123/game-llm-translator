@@ -139,7 +139,6 @@ class ApplyTabMixin:
             out_dir = Path(self.out_dir_edit.text())
             game_type = self.game_type_combo.currentText()
             is_xunity = game_type == "unity-xunity"
-            is_vxace = game_type == "rpg-maker-vxace"
             if is_xunity:
                 data_dir = detect_xunity(game_dir)
                 if data_dir is None:
@@ -147,11 +146,6 @@ class ApplyTabMixin:
                 backup_dir = timestamped_unique_path(game_dir, "translation_backup_")
                 file_glob = "*.txt"
                 label = "Translation TXT files"
-            elif is_vxace:
-                data_dir = self._game_data_dir(game_dir)
-                backup_dir = timestamped_unique_path(game_dir, "data_backup_")
-                file_glob = "*.rvdata2"
-                label = "RPG Maker .rvdata2 files"
             else:
                 data_dir = self._game_data_dir(game_dir)
                 backup_dir = timestamped_unique_path(game_dir, "data_backup_")
@@ -176,8 +170,7 @@ class ApplyTabMixin:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(f, dest)
             self._log(f"Applied {len(files)} files -> {data_dir}")
-            # Font replacement only for MV/MZ — VX Ace uses RGSS3 system fonts.
-            if not is_vxace:
+            if not is_xunity:
                 try:
                     font_result = ensure_game_fonts_support(game_dir, self.target_lang_edit.text())
                     if font_result["replaced"]:

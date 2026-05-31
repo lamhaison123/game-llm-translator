@@ -48,15 +48,6 @@ def test_vxace_validation_preserves_control_codes():
     assert any("missing control code" in w for w in warnings)
 
 
-def test_vxace_validation_preserves_angle_tags():
-    warnings = translation_warnings("<战斗结束时退队>", "Rời đội khi kết thúc chiến đấu", "rpg_maker_vxace_note")
-    assert any("missing tag" in w for w in warnings)
-
-
-def test_vxace_validation_accepts_translated_angle_tag():
-    assert translation_warnings("<战斗结束时退队>", "<Rời đội khi kết thúc chiến đấu>", "rpg_maker_vxace_note") == []
-
-
 def test_vxace_script_string_rejects_unescaped_newline():
     warnings = translation_warnings("精神值变化:", "Dòng 1\nDòng 2", "rpg_maker_map_script_string")
     assert any("script string contains newline" in w for w in warnings)
@@ -69,12 +60,12 @@ def test_repair_translation_syntax_appends_missing_control_codes():
 
 
 def test_repair_translation_syntax_preserves_translated_note_tag():
-    fixed = repair_translation_syntax("<战斗结束时退队>", "<Rời đội khi kết thúc chiến đấu>", "rpg_maker_vxace_note")
+    fixed = repair_translation_syntax("<战斗结束时退队>", "<Rời đội khi kết thúc chiến đấu>", "rpg_maker_map_comment")
     assert fixed == "<Rời đội khi kết thúc chiến đấu>"
 
 
 def test_repair_translation_syntax_appends_missing_percent_placeholder():
-    fixed = repair_translation_syntax("下一%s", "Tiếp theo", "rpg_maker_vxace_script_vocab_string")
+    fixed = repair_translation_syntax("下一%s", "Tiếp theo", "rpg_maker_map_script_string")
     assert fixed == "Tiếp theo%s"
 
 

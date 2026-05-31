@@ -58,7 +58,7 @@ class GameTabMixin:
         form.addRow("Game folder", self._path_picker(self.game_dir_edit, self._choose_game_dir))
 
         self.game_type_combo = QComboBox()
-        self.game_type_combo.addItems(["rpg-maker-mv", "rpg-maker-mz", "rpg-maker-vxace", "unity-xunity"])
+        self.game_type_combo.addItems(["rpg-maker-mv", "rpg-maker-mz", "unity-xunity"])
         self.game_type_combo.setCurrentText(normalize_gui_game_type(str(self.config.get("game_type", "rpg-maker-mv"))))
         form.addRow("Game type", self.game_type_combo)
 

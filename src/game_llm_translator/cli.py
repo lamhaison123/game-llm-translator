@@ -13,7 +13,7 @@ from .auto import analyze_game, auto_translate_game, write_analysis_report
 from .config import load_settings
 from .csv_store import load_entries, load_results, save_entries, save_results
 from .editor import open_file_editor
-from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz, extract_rpg_maker_vxace
+from .rpg_maker import apply_rpg_maker, extract_rpg_maker, extract_rpg_maker_mv, extract_rpg_maker_mz
 from .xunity import apply_xunity, extract_xunity
 from .unity import extract_unity
 from .models import TranslationResult, TextEntry, text_identity
@@ -27,11 +27,11 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 console = Console(force_terminal=False, legacy_windows=False)
 
-GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "rpg-maker-vxace", "unity", "unity-xunity"]
+GameType = Literal["rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "unity", "unity-xunity"]
 
 
 def _is_rpg_maker_type(game_type: GameType) -> bool:
-    return game_type in {"rpg-maker", "rpg-maker-mv", "rpg-maker-mz", "rpg-maker-vxace"}
+    return game_type in {"rpg-maker", "rpg-maker-mv", "rpg-maker-mz"}
 
 
 def _is_xunity_type(game_type: GameType) -> bool:
@@ -43,15 +43,13 @@ def _extract(game_type: GameType, game_dir: Path):
         return extract_rpg_maker_mv(game_dir)
     if game_type == "rpg-maker-mz":
         return extract_rpg_maker_mz(game_dir)
-    if game_type == "rpg-maker-vxace":
-        return extract_rpg_maker_vxace(game_dir)
     if _is_rpg_maker_type(game_type):
         return extract_rpg_maker(game_dir)
     if game_type == "unity-xunity":
         return extract_xunity(game_dir)
     if game_type == "unity":
         return extract_unity(game_dir)
-    raise typer.BadParameter("game_type must be rpg-maker, rpg-maker-mv, rpg-maker-mz, rpg-maker-vxace, unity-xunity, or unity")
+    raise typer.BadParameter("game_type must be rpg-maker, rpg-maker-mv, rpg-maker-mz, unity-xunity, or unity")
 
 
 @app.command()
@@ -417,10 +415,7 @@ def apply(
         return
     if _is_rpg_maker_type(game_type):
         apply_rpg_maker(results, out_dir)
-        if game_type == "rpg-maker-vxace":
-            console.print(f"Wrote RPG Maker VX Ace .rvdata2 -> {out_dir}")
-        else:
-            console.print(f"Wrote RPG Maker translated JSON -> {out_dir}")
+        console.print(f"Wrote RPG Maker translated JSON -> {out_dir}")
     elif _is_xunity_type(game_type):
         apply_xunity(results, out_dir)
         console.print(f"Wrote XUnity translated TXT -> {out_dir}")
