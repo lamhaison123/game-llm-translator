@@ -339,7 +339,6 @@ Output: `dist/game-translator-gui.app`.
 | RPG Maker MZ | ✅ | ✅ | ✅ | đầy đủ + plugin command 357 |
 | Unity (XUnity AutoTranslator) | ✅ | ✅ | ✅ | qua `Translation/{lang}/Text/*.txt` |
 | RPG Maker VX Ace / VX / XP | ✅ | ❌ | ❌ | detect only (không hỗ trợ) |
-| RPG Maker VX / XP | ✅ | ❌ | ❌ | detect only |
 
 ## License
 

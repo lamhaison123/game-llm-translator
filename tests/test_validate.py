@@ -48,8 +48,8 @@ def test_vxace_validation_preserves_control_codes():
     assert any("missing control code" in w for w in warnings)
 
 
-def test_vxace_script_string_rejects_unescaped_newline():
-    warnings = translation_warnings("精神值变化:", "Dòng 1\nDòng 2", "rpg_maker_map_script_string")
+def test_script_rejects_unescaped_newline():
+    warnings = translation_warnings("精神値变化:", "Dòng 1\nDòng 2", "rpg_maker_script")
     assert any("script string contains newline" in w for w in warnings)
 
 
@@ -59,7 +59,7 @@ def test_repair_translation_syntax_appends_missing_control_codes():
     assert "\\N[7]" in fixed
 
 
-def test_repair_translation_syntax_preserves_translated_note_tag():
+def test_repair_translation_syntax_preserves_angle_bracket_translation():
     fixed = repair_translation_syntax("<战斗结束时退队>", "<Rời đội khi kết thúc chiến đấu>", "rpg_maker_map_comment")
     assert fixed == "<Rời đội khi kết thúc chiến đấu>"
 

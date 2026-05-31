@@ -814,6 +814,20 @@ def test_apply_rpg_maker_preserves_minified_format(tmp_path):
     assert data[1]["name"] == "Ha-rôn"
 
 
+def test_apply_rpg_maker_rejects_rvdata2_entries(tmp_path):
+    results = [
+        TranslationResult(
+            file=Path("Data/Actors.rvdata2"),
+            key="$.events[1].pages[0].list[0].parameters[0]",
+            source="Hello",
+            target="Xin chao",
+            context="rpg_maker_event_text",
+        ),
+    ]
+    with pytest.raises(ValueError, match=r"\.rvdata2"):
+        apply_rpg_maker(results, tmp_path / "out")
+
+
 def test_apply_rpg_maker_preserves_indented_format(tmp_path):
     indented_json = json.dumps([None, {"id": 1, "name": "Harold"}], ensure_ascii=False, indent=2)
     src = tmp_path / "data" / "Actors.json"

@@ -24,6 +24,12 @@ def apply_rpg_maker(results: list[TranslationResult], output_dir: Path) -> None:
     """Apply RPG Maker translations (MV/MZ JSON format)."""
     if not results:
         return
+    legacy = [r for r in results if Path(r.file).suffix.lower() == ".rvdata2"]
+    if legacy:
+        raise ValueError(
+            f"Found {len(legacy)} .rvdata2 entries from a previous VX Ace session. "
+            "VX Ace support was removed; only MV/MZ .json files can be applied."
+        )
     _apply_rpg_maker_json(results, output_dir)
 
 

@@ -345,10 +345,10 @@ class TranslatorGUI(
         return path
 
     def _game_data_dir(self, game_dir: Path) -> Path:
-        for c in (game_dir / "www" / "data", game_dir / "data", game_dir / "Data"):
+        for c in (game_dir / "www" / "data", game_dir / "data"):
             if c.exists():
                 return c
-        raise ValueError(f"No data folder found in {game_dir}")
+        raise ValueError(f"No MV/MZ data folder found in {game_dir}")
 
     # ------------------------------------------------------------------
     # Logging / status updates (signals)

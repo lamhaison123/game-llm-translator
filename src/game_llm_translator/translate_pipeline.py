@@ -155,9 +155,8 @@ _DEDUP_CATEGORIES: dict[str, str] = {
     "rpg_maker_classes_name": "name", "rpg_maker_map_display_name": "name",
     "rpg_maker_system_gameTitle": "name", "rpg_maker_system_currencyUnit": "name",
     "rpg_maker_speaker_name": "name", "rpg_maker_troops_name": "name",
-    "rpg_maker_map_event_name": "name", "rpg_maker_map_info_name": "name",
+    "rpg_maker_event_name": "name", "rpg_maker_map_info_name": "name",
     "rpg_maker_common_event_name": "name", "rpg_maker_troop_name": "name",
-    "rpg_maker_map_actor_name": "name",
     "rpg_maker_event_text": "dialogue", "rpg_maker_map_dialogue": "dialogue",
     "rpg_maker_map_comment": "dialogue", "rpg_maker_comment": "dialogue",
     "rpg_maker_skills_message1": "dialogue", "rpg_maker_skills_message2": "dialogue",
@@ -181,7 +180,15 @@ _DEDUP_CATEGORIES: dict[str, str] = {
 
 
 def _dedup_category(context: str) -> str:
-    return _DEDUP_CATEGORIES.get(context, context)
+    if context in _DEDUP_CATEGORIES:
+        return _DEDUP_CATEGORIES[context]
+    if context.startswith("rpg_maker_plugin_ui_"):
+        return "plugin_ui"
+    if context.startswith("rpg_maker_generic_"):
+        return "generic"
+    if context.startswith("rpg_maker_plugin_param_"):
+        return "plugin_param"
+    return context
 
 
 def dedupe_group_key(entry: TextEntry) -> tuple[str, str]:
